@@ -1,0 +1,4 @@
+This is a test file for upload functionality.
+It contains multiple lines
+to test proper handling of file uploads
+in the chat application. 

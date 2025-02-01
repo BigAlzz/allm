@@ -1,0 +1,6 @@
+@echo off
+echo Installing test dependencies...
+.\venv\Scripts\pip install -r tests/requirements.txt
+
+echo Running tests...
+.\venv\Scripts\python tests/test_chat_interface.py 

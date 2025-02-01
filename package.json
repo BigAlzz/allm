@@ -1,0 +1,41 @@
+{
+  "devDependencies": {
+    "@testing-library/jest-dom": "^5.16.5",
+    "@testing-library/react": "^13.4.0",
+    "@testing-library/user-event": "^14.4.3",
+    "jest": "^29.3.1",
+    "jest-environment-jsdom": "^29.3.1",
+    "mocha": "^10.2.0",
+    "selenium-webdriver": "^4.8.0",
+    "chromedriver": "^120.0.0",
+    "identity-obj-proxy": "^3.0.0"
+  },
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:e2e": "mocha src/tests/e2e/**/*.e2e.js --timeout 30000",
+    "test:perf": "mocha src/tests/performance/**/*.perf.js --timeout 60000",
+    "test:coverage": "jest --coverage",
+    "test:all": "npm run test && npm run test:e2e && npm run test:perf"
+  },
+  "jest": {
+    "testEnvironment": "jsdom",
+    "moduleNameMapper": {
+      "\\.(css|less|scss|sass)$": "identity-obj-proxy",
+      "\\.(jpg|jpeg|png|gif|webp|svg)$": "<rootDir>/src/tests/__mocks__/fileMock.js"
+    },
+    "setupFilesAfterEnv": [
+      "<rootDir>/src/tests/setupTests.js"
+    ],
+    "testMatch": [
+      "<rootDir>/src/tests/**/*.test.js",
+      "<rootDir>/src/tests/e2e/**/*.e2e.js"
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.{js,jsx}",
+      "!src/tests/**",
+      "!src/index.js",
+      "!src/reportWebVitals.js"
+    ]
+  }
+}

@@ -25,10 +25,12 @@ import {
   MoreVert as MoreIcon,
   Settings as SettingsIcon,
   Refresh as RefreshIcon,
+  NoteAdd as NoteAddIcon,
 } from '@mui/icons-material';
 import ChatWindow from './components/ChatWindow';
 import NetworkDiagnostics from './components/NetworkDiagnostics';
 import { alpha } from '@mui/material/styles';
+import Notebook from './components/Notebook';
 
 // Create a dark theme with purple accents
 const theme = createTheme({
@@ -80,7 +82,11 @@ const theme = createTheme({
 });
 
 const AppContainer = styled(Box)(({ theme }) => ({
+  display: 'flex',
+  flexDirection: 'column',
   minHeight: '100vh',
+  maxHeight: '100vh',
+  overflow: 'hidden',
   backgroundColor: theme.palette.background.default,
 }));
 
@@ -90,7 +96,9 @@ const ChatContainer = styled(Box)(({ theme }) => ({
   width: '100%',
   maxWidth: 1600,
   margin: '0 auto',
-  height: 'calc(100vh - 80px)', // Adjusted for new header height
+  height: 'calc(100vh - 64px)', // Account for AppBar height
+  padding: theme.spacing(2),
+  overflow: 'hidden',
   '@media (max-width: 960px)': {
     flexDirection: 'column',
     height: 'auto',
@@ -114,6 +122,9 @@ const StyledAppBar = styled(AppBar)(({ theme }) => ({
   backgroundImage: 'none',
   borderBottom: `1px solid ${theme.palette.divider}`,
   boxShadow: 'none',
+  position: 'sticky',
+  top: 0,
+  zIndex: theme.zIndex.appBar,
 }));
 
 const StyledToolbar = styled(Toolbar)(({ theme }) => ({
@@ -164,6 +175,7 @@ function App() {
     port: localStorage.getItem('lmStudioPort') || '1234',
   });
   const [configOpen, setConfigOpen] = useState(false);
+  const [isNotebookOpen, setIsNotebookOpen] = useState(false);
 
   const cleanAddress = serverConfig.address.replace(/^https?:\/\//, '');
   const serverUrl = `http://${cleanAddress}:${serverConfig.port}`;
@@ -180,13 +192,19 @@ function App() {
   const fetchModels = async (retryAttempt = 0) => {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // Increase timeout to 30s for initial load
 
-      // Try direct GET request first without CORS mode
       const response = await fetch(`${serverUrl}/v1/models`, {
         method: 'GET',
-        headers: DEFAULT_HEADERS,
-        signal: controller.signal
+        headers: {
+          ...DEFAULT_HEADERS,
+          'Connection': 'keep-alive',
+          'Keep-Alive': 'timeout=120',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        },
+        signal: controller.signal,
+        cache: 'no-store'
       });
 
       clearTimeout(timeoutId);
@@ -203,7 +221,16 @@ function App() {
         throw new Error('No models available in LM Studio. Please load a model first.');
       }
 
-      setModels(data.data.map(model => ({
+      // Sort models to prioritize Qwen and Deepseek
+      const sortedModels = data.data.sort((a, b) => {
+        const nameA = a.id.toLowerCase();
+        const nameB = b.id.toLowerCase();
+        if (nameA.includes('qwen') || nameA.includes('deepseek')) return -1;
+        if (nameB.includes('qwen') || nameB.includes('deepseek')) return 1;
+        return 0;
+      });
+
+      setModels(sortedModels.map(model => ({
         id: model.id,
         name: model.id.split('/').pop().replace(/-GGUF$/, '')
       })));
@@ -221,8 +248,8 @@ function App() {
       }
       setError(errorMessage);
 
-      const maxRetries = 3;
-      const backoffDelay = Math.min(1000 * Math.pow(2, retryAttempt), 10000);
+      const maxRetries = 5; // Increase max retries
+      const backoffDelay = Math.min(1000 * Math.pow(2, retryAttempt), 30000); // Cap at 30 seconds
       
       if (retryAttempt < maxRetries) {
         console.log(`Retrying in ${backoffDelay/1000} seconds... (Attempt ${retryAttempt + 1}/${maxRetries})`);
@@ -239,13 +266,34 @@ function App() {
     const initializeApp = async () => {
       await fetchModels(retryCount);
       if (!error) {
-        const interval = setInterval(() => fetchModels(0), 30000);
+        // Poll every 2 minutes instead of 30 seconds to reduce server load
+        const interval = setInterval(() => fetchModels(0), 120000);
         return () => clearInterval(interval);
       }
     };
 
     initializeApp();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retryCount, serverUrl, error]);
+
+  // Cache models in localStorage to reduce initial load
+  useEffect(() => {
+    if (models.length > 0) {
+      localStorage.setItem('cachedModels', JSON.stringify(models));
+    }
+  }, [models]);
+
+  // Load cached models on startup
+  useEffect(() => {
+    const cachedModels = localStorage.getItem('cachedModels');
+    if (cachedModels) {
+      try {
+        setModels(JSON.parse(cachedModels));
+      } catch (e) {
+        console.error('Error loading cached models:', e);
+      }
+    }
+  }, []);
 
   const handleRetry = () => {
     setLoading(true);
@@ -299,11 +347,11 @@ function App() {
           </LoadingContainer>
         ) : (
           <>
-            <StyledAppBar position="static">
+            <StyledAppBar>
               <StyledToolbar>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                   <Typography variant="h6" component="div">
-                    LM Studio Chat
+                    ALLM
                   </Typography>
                   <NetworkDiagnostics variant="compact" showTestButton={false} />
                 </Box>
@@ -316,6 +364,13 @@ function App() {
                   </ActionButton>
                   <IconButton
                     color="inherit"
+                    onClick={() => setIsNotebookOpen(true)}
+                    title="Open Notebook"
+                  >
+                    <NoteAddIcon />
+                  </IconButton>
+                  <IconButton
+                    color="inherit"
                     onClick={() => setConfigOpen(true)}
                   >
                     <SettingsIcon />
@@ -324,28 +379,26 @@ function App() {
               </StyledToolbar>
             </StyledAppBar>
 
-            <Container maxWidth={false} sx={{ py: 3 }}>
-              <ChatContainer>
-                <ChatWindow
-                  position="left"
-                  models={models}
-                  streamingResponse={streamingResponses.left}
-                  isThinking={thinking.left}
-                  setStreamingResponses={setStreamingResponses}
-                  setThinking={setThinking}
-                  serverUrl={serverUrl}
-                />
-                <ChatWindow
-                  position="right"
-                  models={models}
-                  streamingResponse={streamingResponses.right}
-                  isThinking={thinking.right}
-                  setStreamingResponses={setStreamingResponses}
-                  setThinking={setThinking}
-                  serverUrl={serverUrl}
-                />
-              </ChatContainer>
-            </Container>
+            <ChatContainer>
+              <ChatWindow
+                position="left"
+                models={models}
+                streamingResponse={streamingResponses.left}
+                isThinking={thinking.left}
+                setStreamingResponses={setStreamingResponses}
+                setThinking={setThinking}
+                serverUrl={serverUrl}
+              />
+              <ChatWindow
+                position="right"
+                models={models}
+                streamingResponse={streamingResponses.right}
+                isThinking={thinking.right}
+                setStreamingResponses={setStreamingResponses}
+                setThinking={setThinking}
+                serverUrl={serverUrl}
+              />
+            </ChatContainer>
           </>
         )}
 
@@ -390,6 +443,11 @@ function App() {
             </ActionButton>
           </DialogActions>
         </Dialog>
+
+        <Notebook 
+          open={isNotebookOpen}
+          onClose={() => setIsNotebookOpen(false)}
+        />
       </AppContainer>
     </ThemeProvider>
   );

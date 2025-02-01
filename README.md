@@ -1,4 +1,4 @@
-# Cline - AI Chat Interface
+# ALLM - AI Chat Interface
 
 A modern chat interface for interacting with local LM Studio models, built with React and Material-UI.
 

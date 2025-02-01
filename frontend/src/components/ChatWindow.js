@@ -15,6 +15,7 @@ import {
   Popover,
   Tooltip,
   ClickAwayListener,
+  Divider,
 } from '@mui/material';
 import {
   Send as SendIcon,
@@ -26,6 +27,7 @@ import {
   Stop as StopIcon,
   Add as AddIcon,
   NoteAdd as NoteAddIcon,
+  Psychology as BrainstormIcon,
 } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import { styled } from '@mui/material/styles';
@@ -89,12 +91,27 @@ const MessageContent = styled(Box)(({ theme, align }) => ({
     borderRadius: theme.spacing(1),
     overflow: 'auto',
     margin: theme.spacing(1, 0),
+    fontFamily: 'monospace',
   },
   '& code': {
     fontFamily: 'monospace',
     backgroundColor: theme.palette.background.default,
     padding: theme.spacing(0.25, 0.5),
     borderRadius: theme.spacing(0.5),
+  },
+  '& ul, & ol': {
+    marginTop: theme.spacing(1),
+    marginBottom: theme.spacing(1),
+    paddingLeft: theme.spacing(3),
+  },
+  '& li': {
+    marginBottom: theme.spacing(0.5),
+  },
+  '& blockquote': {
+    borderLeft: `3px solid ${theme.palette.divider}`,
+    margin: theme.spacing(1, 0),
+    paddingLeft: theme.spacing(2),
+    color: theme.palette.text.secondary,
   },
 }));
 
@@ -148,6 +165,8 @@ function ChatWindow({
   setStreamingResponses,
   setThinking,
   serverUrl,
+  otherPanelMessages,
+  onBrainstormMessage,
 }) {
   // Move startNewConversation definition before any hooks that use it
   const startNewConversation = useCallback(() => {
@@ -190,7 +209,10 @@ function ChatWindow({
   );
 
   const [inputValue, setInputValue] = useState('');
-  const [selectedModel, setSelectedModel] = useState('');
+  const [selectedModel, setSelectedModel] = useState(() => {
+    const savedModel = localStorage.getItem(`selectedModel-${position}`);
+    return savedModel || '';
+  });
   const [menuAnchor, setMenuAnchor] = useState(null);
   const [emojiAnchor, setEmojiAnchor] = useState(null);
   const [uploadError, setUploadError] = useState('');
@@ -207,49 +229,117 @@ function ChatWindow({
     return parseInt(localStorage.getItem('lastHealthCheck') || '0');
   });
 
-  // Update model loading logic to be more efficient
-  useEffect(() => {
-    if (models.length > 0 && !selectedModel) {
-      // Try to select deepseek or qwen model by default if available
-      const preferredModel = models.find(m => {
-        const name = m.name.toLowerCase();
-        return name.includes('deepseek') || name.includes('qwen');
-      });
-      // Only set model if found, don't trigger unnecessary model loads
-      if (preferredModel) {
-        setSelectedModel(preferredModel.id);
-      }
+  // Add health check toggle state
+  const [healthChecksEnabled, setHealthChecksEnabled] = useState(() => {
+    return localStorage.getItem('healthChecksEnabled') !== 'false';
+  });
+
+  // Add loading state for model switching
+  const [isModelSwitching, setIsModelSwitching] = useState(false);
+
+  // Add model status tracking
+  const [modelStatus, setModelStatus] = useState({});
+  const lastNetworkCheck = useRef(0);
+  const networkCheckInterval = 60000; // 1 minute in milliseconds
+
+  // Cache models list with a longer interval
+  const [cachedModels, setCachedModels] = useState([]);
+  const modelListInterval = 60000; // 1 minute
+  const lastModelListCheck = useRef(0);
+
+  // Add brainstorm state
+  const [brainstormEnabled, setBrainstormEnabled] = useState(() => {
+    return localStorage.getItem(`brainstorm-enabled-${position}`) === 'true';
+  });
+
+  // Now handleModelChange can use unloadModel
+  const handleModelChange = useCallback(async (newModelId) => {
+    if (selectedModel === newModelId || isModelSwitching) return;
+    
+    setIsModelSwitching(true);
+    try {
+      setSelectedModel(newModelId);
+      localStorage.setItem(`selectedModel-${position}`, newModelId);
+    } finally {
+      setIsModelSwitching(false);
     }
-  }, [models, selectedModel]);
+  }, [selectedModel, position, isModelSwitching]);
 
-  // Modify health check to use a lightweight endpoint
-  const checkServerHealth = useCallback(async (headers) => {
+  // Update checkServerHealth to respect the toggle
+  const checkServerHealth = useCallback(async () => {
+    // If health checks are disabled, always return true
+    if (!healthChecksEnabled) {
+      return true;
+    }
+
     const now = Date.now();
-    const healthCheckInterval = 60000;
+    if (now - lastNetworkCheck.current < networkCheckInterval) {
+      return true; // Return true if we checked recently
+    }
 
-    if (now - lastHealthCheck > healthCheckInterval) {
+    try {
+      const response = await fetch(`${serverUrl}/health`, {
+        method: 'HEAD',
+        signal: AbortSignal.timeout(5000)
+      });
+      
+      if (response.ok) {
+        lastNetworkCheck.current = now;
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.warn('Health check failed:', error);
+      return false;
+    }
+  }, [serverUrl, healthChecksEnabled]);
+
+  // Add effect to save health check preference
+  useEffect(() => {
+    localStorage.setItem('healthChecksEnabled', healthChecksEnabled);
+  }, [healthChecksEnabled]);
+
+  // Replace models prop usage with cached models
+  useEffect(() => {
+    const fetchModels = async () => {
+      const now = Date.now();
+      if (now - lastModelListCheck.current < modelListInterval) {
+        return; // Use cached models if checked recently
+      }
+
       try {
-        // Use basic health check endpoint that doesn't load models
-        const healthCheck = await fetch(`${serverUrl}/health`, {
-          method: 'HEAD', // Use HEAD request instead of GET
-          headers,
-          signal: AbortSignal.timeout(5000),
-          cache: 'no-store'
+        const response = await fetch(`${serverUrl}/v1/models`, {
+          method: 'GET',
+          headers: { 'Cache-Control': 'no-cache' }
         });
         
-        if (!healthCheck.ok) {
-          throw new Error('Server is not responding properly');
+        if (response.ok) {
+          const data = await response.json();
+          setCachedModels(data.data || []);
+          lastModelListCheck.current = now;
         }
-        
-        setLastHealthCheck(now);
-        localStorage.setItem('lastHealthCheck', now.toString());
-      } catch (healthError) {
-        if (healthError.name !== 'AbortError') {
-          throw new Error('Cannot connect to server. Please check your connection.');
-        }
+      } catch (error) {
+        console.warn('Failed to fetch models:', error);
+      }
+    };
+
+    fetchModels();
+  }, [serverUrl]);
+
+  // Update model selection logic to use cached models
+  useEffect(() => {
+    if (cachedModels.length > 0 && !selectedModel) {
+      const savedModel = localStorage.getItem(`selectedModel-${position}`);
+      
+      // Only use saved model if it exists in current available models
+      if (savedModel && cachedModels.some(m => m.id === savedModel)) {
+        handleModelChange(savedModel);
+      } else {
+        // If no saved model or it's not available, select the first available model
+        handleModelChange(cachedModels[0].id);
       }
     }
-  }, [serverUrl, lastHealthCheck]);
+  }, [cachedModels, selectedModel, handleModelChange, position]);
 
   // Update conversation messages
   const updateConversationMessages = useCallback((newMessages) => {
@@ -318,11 +408,25 @@ function ChatWindow({
     }, 1500); // 1.5 second debounce
   }, [position, setStreamingResponses]);
 
-  // Update handleSendMessage to be more efficient with model loading
+  // Optimize chat completion request
   const handleSendMessage = async () => {
-    if (!inputValue.trim() || !selectedModel) return;
+    if (!inputValue.trim() || !selectedModel || isModelSwitching) return;
 
-    // Reset states before starting new message
+    // Only check server health once per minute
+    const isServerHealthy = await checkServerHealth();
+    if (!isServerHealthy) {
+      const errorMessage = 'Cannot connect to server. Please check that LM Studio is running.';
+      updateConversationMessages([
+        ...currentConversation.messages,
+        {
+          content: errorMessage,
+          timestamp: new Date().toISOString(),
+          role: 'error',
+        }
+      ]);
+      return;
+    }
+
     setStreamingResponses(prev => ({ ...prev, [position]: '' }));
     responseBuffer.current = '';
     
@@ -332,12 +436,9 @@ function ChatWindow({
       role: 'user',
     };
 
-    // Update conversation with new message
     const updatedMessages = [...currentConversation.messages, newMessage];
     updateConversationMessages(updatedMessages);
     setInputValue('');
-    
-    // Set thinking state after message is added
     setThinking(prev => ({ ...prev, [position]: true }));
 
     try {
@@ -348,22 +449,13 @@ function ChatWindow({
         }
       }, 180000);
 
-      const headers = {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Connection': 'keep-alive',
-        'Keep-Alive': 'timeout=180',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-      };
-
-      // Only check basic server health
-      await checkServerHealth(headers);
-
       const response = await fetch(`${serverUrl}/v1/chat/completions`, {
         method: 'POST',
         signal: abortControllerRef.current.signal,
-        headers,
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           model: selectedModel,
           messages: updatedMessages.map(msg => ({
@@ -374,58 +466,84 @@ function ChatWindow({
           temperature: 0.7,
           max_tokens: 2000,
           options: {
-            load_model_only_when_needed: true,
-            unload_model_after_completion: true,
-            skip_embedding_model: true // Skip loading embedding model
+            load_model_only_when_needed: false,
+            unload_model_after_completion: false, // Never unload models
+            skip_embedding_model: true,
+            skip_model_load_test: true,
+            no_auto_model_selection: true,
+            unload_other_models: false // Never unload other models
           }
-        }),
-        cache: 'no-store'
+        })
       });
 
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Server returned ${response.status}: ${errorText}`);
+        throw new Error(`Server returned ${response.status}: ${await response.text()}`);
       }
 
-      if (!response.body) {
-        throw new Error('Server response has no body');
-      }
-
-      const reader = response.body.getReader();
-      responseBuffer.current = '';
-      
-      try {
-        const responseText = await processStreamingResponse(reader);
-        
-        if (responseText) {
-          const updatedMessagesWithResponse = [...updatedMessages, {
-            content: responseText,
-            timestamp: new Date().toISOString(),
-            role: 'assistant',
-          }];
-          updateConversationMessages(updatedMessagesWithResponse);
-        }
-      } finally {
-        if (updateTimeoutRef.current) {
-          clearTimeout(updateTimeoutRef.current);
-          updateTimeoutRef.current = null;
-        }
-
-        setStreamingResponses(prev => ({ ...prev, [position]: '' }));
-        setThinking(prev => ({ ...prev, [position]: false }));
+      if (response.body) {
+        const reader = response.body.getReader();
         responseBuffer.current = '';
-        abortControllerRef.current = null;
+        
+        try {
+          const responseText = await processStreamingResponse(reader);
+          
+          if (responseText) {
+            const newMessage = {
+              content: responseText,
+              timestamp: new Date().toISOString(),
+              role: 'assistant',
+            };
+
+            const updatedMessagesWithResponse = [...updatedMessages, newMessage];
+            updateConversationMessages(updatedMessagesWithResponse);
+
+            // If brainstorm is enabled, notify the other panel
+            if (brainstormEnabled) {
+              onBrainstormMessage?.(newMessage);
+            }
+          }
+        } finally {
+          if (updateTimeoutRef.current) {
+            clearTimeout(updateTimeoutRef.current);
+            updateTimeoutRef.current = null;
+          }
+
+          setStreamingResponses(prev => ({ ...prev, [position]: '' }));
+          setThinking(prev => ({ ...prev, [position]: false }));
+          responseBuffer.current = '';
+          abortControllerRef.current = null;
+        }
       }
     } catch (error) {
       console.error('Error:', error);
       let errorMessage = 'Unable to get response from LM Studio. ';
-      if (error.name === 'AbortError') {
-        errorMessage += 'Request timed out. The model might be too slow or not responding.';
-      } else if (error.message === 'Failed to fetch') {
-        errorMessage += `Please check that:\n1. LM Studio is still running\n2. Local Server is active\n3. Server address (${serverUrl}) is correct\n4. Your internet connection is stable`;
-      } else {
+      
+      try {
+        // Try to parse the error response
+        const errorData = error.message.includes('{') ? 
+          JSON.parse(error.message.substring(error.message.indexOf('{'))) : null;
+        
+        if (errorData?.error?.message) {
+          if (errorData.error.message.includes('Failed to load model')) {
+            errorMessage = `Model loading failed. Please ensure:\n` +
+              `1. The model file exists and is not corrupted\n` +
+              `2. You have sufficient RAM available\n` +
+              `3. Try restarting LM Studio\n\n` +
+              `Technical details: ${errorData.error.message}`;
+          } else {
+            errorMessage += errorData.error.message;
+          }
+        } else if (error.name === 'AbortError') {
+          errorMessage += 'Request timed out. The model might be too slow or not responding.';
+        } else if (error.message === 'Failed to fetch') {
+          errorMessage += `Please check that:\n1. LM Studio is still running\n2. Local Server is active\n3. Server address (${serverUrl}) is correct\n4. Your internet connection is stable`;
+        } else {
+          errorMessage += error.message;
+        }
+      } catch (parseError) {
+        // If we can't parse the error, just use the original error message
         errorMessage += error.message;
       }
       
@@ -552,7 +670,7 @@ function ChatWindow({
     return () => clearTimeout(scrollTimer);
   }, [currentConversation.messages, streamingResponse, scrollToBottom]);
 
-  // Add rate limiting for streaming updates
+  // Update streaming response handling
   const processStreamingChunk = useCallback((chunk) => {
     const lines = chunk.split('\n');
     let accumulatedContent = '';
@@ -576,27 +694,9 @@ function ChatWindow({
     return accumulatedContent;
   }, []);
 
-  // Clean up timeouts on unmount
-  useEffect(() => {
-    return () => {
-      if (updateTimeoutRef.current) {
-        clearTimeout(updateTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  const handleKeyPress = (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      handleSendMessage();
-    }
-  };
-
   const processStreamingResponse = async (reader, responseText = '', maxIterations = 1000) => {
     let iterations = 0;
-    let accumulatedContent = '';
-    let lastUpdateTime = Date.now();
-    const updateInterval = 1500; // Update every 1.5 seconds
+    let accumulatedContent = responseBuffer.current || '';
 
     try {
       while (iterations < maxIterations) {
@@ -606,26 +706,271 @@ function ChatWindow({
 
         const chunk = new TextDecoder().decode(value);
         const newContent = processStreamingChunk(chunk);
-        responseText += newContent;
         accumulatedContent += newContent;
+        responseText += newContent;
 
-        // Only update UI if enough time has passed
-        if (Date.now() - lastUpdateTime >= updateInterval) {
-          updateStreamingResponse(accumulatedContent);
-          accumulatedContent = '';
-          lastUpdateTime = Date.now();
-        }
-      }
-
-      // Final update for any remaining content
-      if (accumulatedContent) {
-        updateStreamingResponse(accumulatedContent);
+        // Update the streaming response with the accumulated content
+        setStreamingResponses(prev => ({
+          ...prev,
+          [position]: accumulatedContent
+        }));
       }
 
       return responseText;
     } catch (error) {
       console.error('Error processing stream:', error);
       throw error;
+    }
+  };
+
+  // Update StreamingResponseComponent to handle paragraphs better
+  const StreamingResponseComponent = React.memo(({ content }) => (
+    content ? (
+      <Message align="left">
+        <MessageContent 
+          align="left"
+          sx={{ 
+            backgroundColor: theme => theme.palette.background.paper,
+            minWidth: '200px',
+            width: 'fit-content',
+            maxWidth: '70%'
+          }}
+        >
+          <ReactMarkdown 
+            components={{
+              p: ({ children }) => (
+                <Typography 
+                  variant="body1" 
+                  component="p" 
+                  sx={{ 
+                    mb: 1,
+                    '&:last-child': { mb: 0 }
+                  }}
+                >
+                  {children}
+                </Typography>
+              ),
+              pre: ({ node, ...props }) => (
+                <pre style={{ 
+                  backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                  padding: '8px',
+                  borderRadius: '4px',
+                  overflowX: 'auto',
+                }} {...props} />
+              ),
+              code: ({ node, inline, ...props }) => (
+                inline ? 
+                  <code style={{ 
+                    backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                    padding: '2px 4px',
+                    borderRadius: '3px',
+                  }} {...props} /> :
+                  <code {...props} />
+              ),
+            }}
+          >
+            {content}
+          </ReactMarkdown>
+        </MessageContent>
+      </Message>
+    ) : null
+  ));
+
+  // Update ThinkingIndicator to be more precise
+  const ThinkingIndicator = React.memo(({ isThinking, onStop }) => (
+    isThinking && !streamingResponse && !currentConversation.messages.find(m => m.role === 'error') ? (
+      <Message align="left">
+        <MessageContent 
+          align="left" 
+          sx={{ 
+            backgroundColor: 'rgba(0, 0, 0, 0.2)',
+            minWidth: '200px',
+            width: 'fit-content',
+            maxWidth: '70%',
+            position: 'relative',
+            padding: '12px 16px',
+            '& pre': {
+              margin: 0,
+              padding: 0,
+              backgroundColor: 'transparent',
+              fontFamily: 'inherit',
+              whiteSpace: 'pre-wrap',
+              fontSize: '0.875rem',
+            }
+          }}
+        >
+          <Box sx={{ 
+            display: 'flex', 
+            flexDirection: 'column',
+            gap: 1,
+          }}>
+            <pre>{"<think>"}</pre>
+            <pre style={{ marginLeft: '8px' }}>
+              {"Processing request and generating response..."}
+            </pre>
+            <pre>{"</think>"}</pre>
+            <Box sx={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: 1,
+              mt: 1,
+              pt: 1,
+              borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+            }}>
+              <CircularProgress size={16} />
+              <Typography>Thinking...</Typography>
+              <IconButton 
+                size="small" 
+                onClick={onStop}
+                sx={{ 
+                  ml: 'auto',
+                  bgcolor: 'error.main',
+                  color: 'error.contrastText',
+                  '&:hover': {
+                    bgcolor: 'error.dark',
+                  },
+                  width: 24,
+                  height: 24,
+                }}
+              >
+                <StopIcon sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Box>
+          </Box>
+        </MessageContent>
+      </Message>
+    ) : null
+  ));
+
+  // Update model status when a model is successfully used
+  const updateModelStatus = useCallback((modelId, isAvailable) => {
+    setModelStatus(prev => ({
+      ...prev,
+      [modelId]: {
+        available: isAvailable,
+        lastChecked: Date.now()
+      }
+    }));
+  }, []);
+
+  // Check if we need to verify model availability
+  const shouldCheckModel = useCallback((modelId) => {
+    const status = modelStatus[modelId];
+    if (!status) return true;
+    
+    const now = Date.now();
+    return now - status.lastChecked > networkCheckInterval;
+  }, [modelStatus]);
+
+  // Add model unload/refresh function
+  const handleModelAction = useCallback(async (action) => {
+    if (!selectedModel) return;
+    
+    setIsModelSwitching(true);
+    try {
+      if (action === 'unload') {
+        await fetch(`${serverUrl}/v1/model/unload`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: selectedModel,
+            options: {
+              unload_other_models: false // Never unload other models
+            }
+          })
+        });
+      } else if (action === 'refresh') {
+        // First unload
+        await fetch(`${serverUrl}/v1/model/unload`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: selectedModel,
+            options: {
+              unload_other_models: false
+            }
+          })
+        });
+        
+        // Then force a reload by sending a test completion
+        await fetch(`${serverUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: selectedModel,
+            messages: [{ role: 'system', content: 'test' }],
+            stream: false,
+            max_tokens: 1,
+            options: {
+              load_model_only_when_needed: false,
+              unload_model_after_completion: false,
+              unload_other_models: false
+            }
+          })
+        });
+      }
+    } catch (error) {
+      console.warn(`Failed to ${action} model:`, error);
+    } finally {
+      setIsModelSwitching(false);
+    }
+  }, [selectedModel, serverUrl]);
+
+  // Add back the missing utility functions
+  const getModelColor = (modelName) => {
+    if (!modelName) return 'primary.main';
+    const name = modelName.trim().toLowerCase();
+    
+    // Use a consistent color scheme based on model name
+    const colors = {
+      hermes: '#00BFA5',    // Teal
+      nomic: '#4A90E2',     // Blue
+      llama: '#2E7D32',     // Green
+      mistral: '#ED6C02',   // Orange
+      openchat: '#1976D2',  // Light blue
+      qwen: '#9C27B0',      // Purple
+      gemma: '#FF4081',     // Pink
+      default: '#757575'    // Grey
+    };
+
+    // Find the first matching model name in the colors object
+    const modelType = Object.keys(colors).find(key => name.includes(key));
+    return modelType ? colors[modelType] : colors.default;
+  };
+
+  const getModelImage = (modelName) => {
+    if (!modelName) return null;
+    const name = modelName.trim().toLowerCase();
+    
+    // Map of model names to their image files
+    const modelImages = {
+      hermes: './Images/Hermes.jpg',
+      nomic: './Images/Nomic.png',
+      qwen: './Images/Qwen2.png',
+      starcoder: './Images/StarCoder.jpg',
+      gemma: './Images/Gemma.png'
+    };
+
+    // Find the first matching model name in the images object
+    const modelType = Object.keys(modelImages).find(key => name.includes(key));
+    return modelType ? modelImages[modelType] : null;
+  };
+
+  const getModelLetter = (modelName) => {
+    if (!modelName) return 'A';
+    return modelName.charAt(0).toUpperCase();
+  };
+
+  const handleKeyPress = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      handleSendMessage();
     }
   };
 
@@ -711,42 +1056,60 @@ function ChatWindow({
     return currentModel?.capabilities?.includes('file_upload') || false;
   };
 
-  const getModelLetter = (modelName) => {
-    if (!modelName) return 'A';
-    const name = modelName.trim().toLowerCase();
-    if (name.includes('deepseek')) return 'D';
-    if (name.includes('qwen')) return 'Q';
-    if (name.includes('hermes')) return 'H';
-    return modelName.charAt(0).toUpperCase();
-  };
-
-  const getModelColor = (modelName) => {
-    if (!modelName) return 'primary.main';
-    const name = modelName.trim().toLowerCase();
-    if (name.includes('deepseek')) return '#4A90E2'; // Blue for Deepseek
-    if (name.includes('qwen')) return '#9C27B0'; // Purple for Qwen
-    if (name.includes('llama')) return '#2E7D32'; // Green for Llama
-    if (name.includes('mistral')) return '#ED6C02'; // Orange for Mistral
-    if (name.includes('openchat')) return '#1976D2'; // Light blue for OpenChat
-    if (name.includes('hermes')) return '#00BFA5'; // Teal for Hermes
-    return '#757575'; // Grey for unknown models
-  };
-
-  const getModelImage = (modelName) => {
-    if (!modelName) return null;
-    const name = modelName.trim().toLowerCase();
-    if (name.includes('deepseek')) return './Images/Deepseek.png';
-    if (name.includes('qwen')) return './Images/Qwen2.png';
-    if (name.includes('starcoder')) return './Images/StarCoder.jpg';
-    if (name.includes('gemma')) return './Images/Gemma.png';
-    if (name.includes('hermes')) return './Images/Hermes.jpg';
-    return null;
-  };
-
-  // Update MessageComponent to include menu
+  // Add back MessageComponent
   const MessageComponent = React.memo(({ message, align }) => {
     const [menuAnchor, setMenuAnchor] = useState(null);
     const [isDragging, setIsDragging] = useState(false);
+
+    const handleDragStart = (e) => {
+      setIsDragging(true);
+      // Set both text and rich data for different drop targets
+      e.dataTransfer.setData('text/plain', message.content);
+      e.dataTransfer.setData('application/json', JSON.stringify({
+        type: 'chat_message',
+        content: message.content,
+        timestamp: message.timestamp,
+        role: message.role,
+        metadata: {
+          model: selectedModel,
+          modelName: models.find(m => m.id === selectedModel)?.name,
+          conversationId: currentConversationId,
+          conversationName: currentConversation.name
+        }
+      }));
+      e.dataTransfer.effectAllowed = 'copyMove';
+      
+      // Create a custom drag image
+      const dragPreview = document.createElement('div');
+      dragPreview.className = 'message-drag-preview';
+      dragPreview.innerHTML = `
+        <div style="
+          padding: 8px 12px;
+          background: rgba(25, 118, 210, 0.9);
+          border-radius: 8px;
+          color: white;
+          font-size: 14px;
+          max-width: 200px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        ">
+          ${message.content.substring(0, 50)}${message.content.length > 50 ? '...' : ''}
+        </div>
+      `;
+      document.body.appendChild(dragPreview);
+      e.dataTransfer.setDragImage(dragPreview, 0, 0);
+      setTimeout(() => document.body.removeChild(dragPreview), 0);
+
+      e.currentTarget.classList.add('dragging');
+    };
+
+    const handleDragEnd = (e) => {
+      setIsDragging(false);
+      e.currentTarget.classList.remove('dragging');
+      setTimeout(() => setIsDragging(false), 100);
+    };
 
     const handleMessageClick = (event) => {
       if (!isDragging) {  // Only show menu if not dragging
@@ -755,33 +1118,25 @@ function ChatWindow({
       }
     };
 
-    const handleDragStart = (e) => {
-      setIsDragging(true);
-      e.dataTransfer.setData('text/plain', message.content);
-      e.dataTransfer.effectAllowed = 'copy';
-      // Add a class to style the dragged element
-      e.currentTarget.classList.add('dragging');
-    };
-
-    const handleDragEnd = (e) => {
-      setIsDragging(false);
-      // Remove the dragging class
-      e.currentTarget.classList.remove('dragging');
-      // Reset after a short delay to allow click events if no drag occurred
-      setTimeout(() => setIsDragging(false), 100);
-    };
-
-    const handleAddToNotebook = () => {
+    const handleAddToNotebook = useCallback(() => {
       const event = new CustomEvent('addToNotebook', {
         detail: {
+          type: 'chat_message',
           content: message.content,
           timestamp: message.timestamp,
-          role: message.role
+          role: message.role,
+          metadata: {
+            model: selectedModel,
+            modelName: models.find(m => m.id === selectedModel)?.name,
+            conversationId: currentConversationId,
+            conversationName: currentConversation.name
+          },
+          source: 'menu'
         }
       });
       window.dispatchEvent(event);
       setMenuAnchor(null);
-    };
+    }, [message]);
 
     return (
       <Message 
@@ -795,11 +1150,16 @@ function ChatWindow({
           '&:hover': {
             '& .message-content': {
               boxShadow: 2,
+              transform: 'translateY(-1px)',
             }
           },
           '&.dragging .message-content': {
             opacity: 0.7,
             boxShadow: 4,
+            transform: 'scale(0.98)',
+          },
+          '& .message-content': {
+            transition: 'all 0.2s ease',
           }
         }}
       >
@@ -817,7 +1177,29 @@ function ChatWindow({
                 transition: 'all 0.2s ease',
               }}
             >
-              <ReactMarkdown>{message.content}</ReactMarkdown>
+              <ReactMarkdown 
+                components={{
+                  pre: ({ node, ...props }) => (
+                    <pre style={{ 
+                      backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                      padding: '8px',
+                      borderRadius: '4px',
+                      overflowX: 'auto',
+                    }} {...props} />
+                  ),
+                  code: ({ node, inline, ...props }) => (
+                    inline ? 
+                      <code style={{ 
+                        backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                        padding: '2px 4px',
+                        borderRadius: '3px',
+                      }} {...props} /> :
+                      <code {...props} />
+                  ),
+                }}
+              >
+                {message.content}
+              </ReactMarkdown>
             </MessageContent>
             <Typography 
               variant="caption" 
@@ -854,100 +1236,33 @@ function ChatWindow({
     );
   });
 
-  // Memoize streaming response component
-  const StreamingResponseComponent = React.memo(({ content }) => (
-    content ? (
-      <Message align="left">
-        <MessageContent 
-          align="left"
-          sx={{ 
-            backgroundColor: 'rgba(0, 0, 0, 0.2)', // Slightly darker background to distinguish from final responses
-            minWidth: '200px',
-            width: 'fit-content',
-            maxWidth: '70%'
-          }}
-        >
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <Typography variant="body1">
-              {content}
-            </Typography>
-          </Box>
-        </MessageContent>
-      </Message>
-    ) : null
-  ));
+  // Add effect to watch for messages from the other panel
+  useEffect(() => {
+    if (!brainstormEnabled || !selectedModel || isThinking || !otherPanelMessages?.length) return;
 
-  // Update ThinkingIndicator to be more precise
-  const ThinkingIndicator = React.memo(({ isThinking, onStop }) => (
-    isThinking && !streamingResponse && !currentConversation.messages.find(m => m.role === 'error') ? (
-      <Message align="left">
-        <MessageContent 
-          align="left" 
-          sx={{ 
-            backgroundColor: 'rgba(0, 0, 0, 0.2)',
-            minWidth: '200px',
-            width: 'fit-content',
-            maxWidth: '70%',
-            position: 'relative',
-            padding: '12px 16px',
-            '& pre': {
-              margin: 0,
-              padding: 0,
-              backgroundColor: 'transparent',
-              fontFamily: 'inherit',
-              whiteSpace: 'pre-wrap',
-              fontSize: '0.875rem',
-            }
-          }}
-        >
-          <Box sx={{ 
-            display: 'flex', 
-            flexDirection: 'column',
-            gap: 1,
-          }}>
-            <pre>{"<think>"}</pre>
-            <pre style={{ marginLeft: '8px' }}>
-              {"Processing request and generating response..."}
-            </pre>
-            <pre>{"</think>"}</pre>
-            <Box sx={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: 1,
-              mt: 1,
-              pt: 1,
-              borderTop: '1px solid rgba(255, 255, 255, 0.1)',
-            }}>
-              <CircularProgress size={16} />
-              <Typography>Thinking...</Typography>
-              <IconButton 
-                size="small" 
-                onClick={onStop}
-                sx={{ 
-                  ml: 'auto',
-                  bgcolor: 'error.main',
-                  color: 'error.contrastText',
-                  '&:hover': {
-                    bgcolor: 'error.dark',
-                  },
-                  width: 24,
-                  height: 24,
-                }}
-              >
-                <StopIcon sx={{ fontSize: 16 }} />
-              </IconButton>
-            </Box>
-          </Box>
-        </MessageContent>
-      </Message>
-    ) : null
-  ));
+    const lastMessage = otherPanelMessages[otherPanelMessages.length - 1];
+    if (lastMessage?.role === 'assistant' && !lastMessage.processed) {
+      // Mark the message as processed to prevent loops
+      lastMessage.processed = true;
+      
+      // Add a small delay to make the conversation feel more natural
+      setTimeout(() => {
+        setInputValue(lastMessage.content);
+        handleSendMessage();
+      }, 1000);
+    }
+  }, [brainstormEnabled, otherPanelMessages, selectedModel, isThinking]);
+
+  // Save brainstorm state
+  useEffect(() => {
+    localStorage.setItem(`brainstorm-enabled-${position}`, brainstormEnabled);
+  }, [brainstormEnabled, position]);
 
   return (
     <StyledPaper elevation={3}>
       <ChatHeader>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <Tooltip title={selectedModel ? models.find(m => m.id === selectedModel)?.name || 'Select a model' : 'Select a model'}>
+          <Tooltip title={selectedModel ? (models.find(m => m.id === selectedModel)?.name || 'Select a model') : 'Select a model'}>
             <Avatar sx={{ 
               bgcolor: selectedModel ? 
                 getModelColor(models.find(m => m.id === selectedModel)?.name || '') :
@@ -1003,7 +1318,7 @@ function ChatWindow({
               <ModelSelector size="small" sx={{ minWidth: 200 }}>
                 <Select
                   value={selectedModel || ''}
-                  onChange={(e) => setSelectedModel(e.target.value)}
+                  onChange={(e) => handleModelChange(e.target.value)}
                   variant="standard"
                   displayEmpty
                 >
@@ -1022,6 +1337,44 @@ function ChatWindow({
           </Box>
         </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
+          <Tooltip title={brainstormEnabled ? "AI Brainstorm Active" : "Enable AI Brainstorm"}>
+            <IconButton 
+              onClick={() => setBrainstormEnabled(prev => !prev)}
+              color={brainstormEnabled ? "primary" : "default"}
+              sx={{
+                position: 'relative',
+                '&::after': brainstormEnabled ? {
+                  content: '""',
+                  position: 'absolute',
+                  top: '50%',
+                  left: '50%',
+                  width: '120%',
+                  height: '120%',
+                  borderRadius: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  animation: 'pulse 2s infinite',
+                  backgroundColor: 'primary.main',
+                  opacity: 0.2,
+                } : {},
+                '@keyframes pulse': {
+                  '0%': {
+                    transform: 'translate(-50%, -50%) scale(0.95)',
+                    opacity: 0.5,
+                  },
+                  '70%': {
+                    transform: 'translate(-50%, -50%) scale(1.1)',
+                    opacity: 0.2,
+                  },
+                  '100%': {
+                    transform: 'translate(-50%, -50%) scale(0.95)',
+                    opacity: 0.5,
+                  },
+                },
+              }}
+            >
+              <BrainstormIcon />
+            </IconButton>
+          </Tooltip>
           <IconButton 
             onClick={startNewConversation}
             title="New Conversation"
@@ -1054,7 +1407,8 @@ function ChatWindow({
         <InputContainer
           onDragOver={(e) => {
             e.preventDefault();
-            e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+            e.currentTarget.style.backgroundColor = 'rgba(25, 118, 210, 0.1)';
+            e.dataTransfer.dropEffect = 'copy';
           }}
           onDragLeave={(e) => {
             e.preventDefault();
@@ -1064,16 +1418,25 @@ function ChatWindow({
             e.preventDefault();
             e.currentTarget.style.backgroundColor = '';
             const text = e.dataTransfer.getData('text/plain');
-            setInputValue(prev => {
-              const cursorPosition = document.querySelector('textarea')?.selectionStart || prev.length;
-              return prev.slice(0, cursorPosition) + text + prev.slice(cursorPosition);
-            });
+            if (text) {
+              setInputValue(prev => {
+                const textarea = document.querySelector('textarea');
+                const cursorPosition = textarea?.selectionStart || prev.length;
+                return prev.slice(0, cursorPosition) + text + prev.slice(cursorPosition);
+              });
+              // Focus and scroll to end
+              const textarea = document.querySelector('textarea');
+              if (textarea) {
+                textarea.focus();
+                textarea.scrollTop = textarea.scrollHeight;
+              }
+            }
           }}
           sx={{
-            transition: 'background-color 0.2s ease',
+            transition: 'all 0.2s ease',
             '&:hover': {
               '&[data-dragging="true"]': {
-                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                backgroundColor: 'rgba(25, 118, 210, 0.1)',
               }
             }
           }}
@@ -1200,6 +1563,22 @@ function ChatWindow({
         </MenuItem>
         <MenuItem onClick={() => handleMenuAction('delete')}>
           Delete Current Conversation
+        </MenuItem>
+        <MenuItem onClick={() => setHealthChecksEnabled(prev => !prev)}>
+          {healthChecksEnabled ? '✓ ' : ''} Health Checks Enabled
+        </MenuItem>
+        <Divider />
+        <MenuItem 
+          onClick={() => handleModelAction('unload')}
+          disabled={!selectedModel || isModelSwitching}
+        >
+          Unload Current Model
+        </MenuItem>
+        <MenuItem 
+          onClick={() => handleModelAction('refresh')}
+          disabled={!selectedModel || isModelSwitching}
+        >
+          Refresh Current Model
         </MenuItem>
       </Menu>
     </StyledPaper>

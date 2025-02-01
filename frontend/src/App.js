@@ -164,12 +164,9 @@ const DEFAULT_HEADERS = {
 };
 
 function App() {
+  const [streamingResponses, setStreamingResponses] = useState({});
+  const [thinking, setThinking] = useState({});
   const [models, setModels] = useState([]);
-  const [streamingResponses, setStreamingResponses] = useState({ left: '', right: '' });
-  const [thinking, setThinking] = useState({ left: false, right: false });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [retryCount, setRetryCount] = useState(0);
   const [serverConfig, setServerConfig] = useState({
     address: localStorage.getItem('lmStudioAddress') || '192.168.50.89',
     port: localStorage.getItem('lmStudioPort') || '1234',
@@ -179,6 +176,25 @@ function App() {
 
   const cleanAddress = serverConfig.address.replace(/^https?:\/\//, '');
   const serverUrl = `http://${cleanAddress}:${serverConfig.port}`;
+
+  // Add state for panel messages
+  const [panelMessages, setPanelMessages] = useState({
+    left: [],
+    right: [],
+  });
+
+  // Handle brainstorm messages
+  const handleBrainstormMessage = (position, message) => {
+    const otherPosition = position === 'left' ? 'right' : 'left';
+    setPanelMessages(prev => ({
+      ...prev,
+      [otherPosition]: [...prev[otherPosition], message],
+    }));
+  };
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   const handleConfigSave = () => {
     const cleanedAddress = serverConfig.address.replace(/^https?:\/\//, '');
@@ -388,6 +404,8 @@ function App() {
                 setStreamingResponses={setStreamingResponses}
                 setThinking={setThinking}
                 serverUrl={serverUrl}
+                otherPanelMessages={panelMessages.right}
+                onBrainstormMessage={(message) => handleBrainstormMessage('left', message)}
               />
               <ChatWindow
                 position="right"
@@ -397,6 +415,8 @@ function App() {
                 setStreamingResponses={setStreamingResponses}
                 setThinking={setThinking}
                 serverUrl={serverUrl}
+                otherPanelMessages={panelMessages.left}
+                onBrainstormMessage={(message) => handleBrainstormMessage('right', message)}
               />
             </ChatContainer>
           </>

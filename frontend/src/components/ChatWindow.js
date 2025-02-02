@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import {
   Box,
   Paper,
@@ -16,6 +16,7 @@ import {
   Tooltip,
   ClickAwayListener,
   Divider,
+  Button,
 } from '@mui/material';
 import {
   Send as SendIcon,
@@ -28,6 +29,9 @@ import {
   Add as AddIcon,
   NoteAdd as NoteAddIcon,
   Psychology as BrainstormIcon,
+  Edit as EditIcon,
+  Check as CheckIcon,
+  Close as CloseIcon,
 } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import { styled } from '@mui/material/styles';
@@ -157,6 +161,54 @@ const ConversationSelector = styled(FormControl)(({ theme }) => ({
   },
 }));
 
+const ConversationHeader = styled(Box)(({ theme }) => ({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: theme.spacing(1, 2),
+  borderBottom: `1px solid ${theme.palette.divider}`,
+  backgroundColor: theme.palette.background.paper,
+}));
+
+const ConversationName = styled(Box)(({ theme }) => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: theme.spacing(1),
+  '& .timestamp-group': {
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(1),
+    marginLeft: theme.spacing(2),
+  },
+  '& .timestamp': {
+    color: theme.palette.text.secondary,
+    fontSize: '0.75rem',
+    marginRight: theme.spacing(2)
+  }
+}));
+
+const EditableTitle = styled(Box)(({ theme }) => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: theme.spacing(1),
+  '& input': {
+    background: 'none',
+    border: 'none',
+    borderBottom: `1px solid ${theme.palette.primary.main}`,
+    color: theme.palette.text.primary,
+    fontSize: '1rem',
+    padding: theme.spacing(0.5, 1),
+    '&:focus': {
+      outline: 'none',
+    }
+  }
+}));
+
+// Add logging utility
+const logDebug = (component, action, details) => {
+  console.log(`[${component}] ${action}:`, details);
+};
+
 function ChatWindow({
   position,
   models,
@@ -167,181 +219,32 @@ function ChatWindow({
   serverUrl,
   otherPanelMessages,
   onBrainstormMessage,
+  onMessageSubmit,
+  onModelSelect,
 }) {
-  // Move startNewConversation definition before any hooks that use it
-  const startNewConversation = useCallback(() => {
-    const newId = Date.now().toString();
-    const newConversation = {
-      id: newId,
-      name: 'New Conversation',
-      messages: [],
-      timestamp: new Date().toISOString()
-    };
-    setConversations(prev => [newConversation, ...prev]);
-    setCurrentConversationId(newId);
-  }, []); // Empty dependency array since it only uses setState functions
-
-  // Initialize state with timestamp-based ID
   const [conversations, setConversations] = useState(() => {
     const saved = localStorage.getItem(`conversations-${position}`);
-    const initialId = Date.now().toString();
     return saved ? JSON.parse(saved) : [{
-      id: initialId,
+      id: Date.now(),
       name: 'New Conversation',
-      messages: [],
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      messages: []
     }];
   });
 
   const [currentConversationId, setCurrentConversationId] = useState(() => {
-    const saved = localStorage.getItem(`conversations-${position}`);
-    if (saved) {
-      const parsedConversations = JSON.parse(saved);
-      return parsedConversations[0]?.id || Date.now().toString();
-    }
-    return Date.now().toString();
+    return conversations[0]?.id;
   });
 
-  // Remove separate messages state and use conversation messages directly
-  const currentConversation = useMemo(() => 
-    conversations.find(c => c.id === currentConversationId) || conversations[0],
-    [conversations, currentConversationId]
-  );
+  const currentConversation = useMemo(() => {
+    return conversations.find(c => c.id === currentConversationId) || conversations[0];
+  }, [conversations, currentConversationId]);
 
-  const [inputValue, setInputValue] = useState('');
-  const [selectedModel, setSelectedModel] = useState(() => {
-    const savedModel = localStorage.getItem(`selectedModel-${position}`);
-    return savedModel || '';
-  });
-  const [menuAnchor, setMenuAnchor] = useState(null);
-  const [emojiAnchor, setEmojiAnchor] = useState(null);
-  const [uploadError, setUploadError] = useState('');
-
-  // Refs
-  const fileInputRef = useRef(null);
-  const messagesEndRef = useRef(null);
-  const abortControllerRef = useRef(null);
-  const responseBuffer = useRef('');
-  const updateTimeoutRef = useRef(null);
-
-  // Add health check state
-  const [lastHealthCheck, setLastHealthCheck] = useState(() => {
-    return parseInt(localStorage.getItem('lastHealthCheck') || '0');
-  });
-
-  // Add health check toggle state
-  const [healthChecksEnabled, setHealthChecksEnabled] = useState(() => {
-    return localStorage.getItem('healthChecksEnabled') !== 'false';
-  });
-
-  // Add loading state for model switching
-  const [isModelSwitching, setIsModelSwitching] = useState(false);
-
-  // Add model status tracking
-  const [modelStatus, setModelStatus] = useState({});
-  const lastNetworkCheck = useRef(0);
-  const networkCheckInterval = 60000; // 1 minute in milliseconds
-
-  // Cache models list with a longer interval
-  const [cachedModels, setCachedModels] = useState([]);
-  const modelListInterval = 60000; // 1 minute
-  const lastModelListCheck = useRef(0);
-
-  // Add brainstorm state
-  const [brainstormEnabled, setBrainstormEnabled] = useState(() => {
-    return localStorage.getItem(`brainstorm-enabled-${position}`) === 'true';
-  });
-
-  // Now handleModelChange can use unloadModel
-  const handleModelChange = useCallback(async (newModelId) => {
-    if (selectedModel === newModelId || isModelSwitching) return;
-    
-    setIsModelSwitching(true);
-    try {
-      setSelectedModel(newModelId);
-      localStorage.setItem(`selectedModel-${position}`, newModelId);
-    } finally {
-      setIsModelSwitching(false);
-    }
-  }, [selectedModel, position, isModelSwitching]);
-
-  // Update checkServerHealth to respect the toggle
-  const checkServerHealth = useCallback(async () => {
-    // If health checks are disabled, always return true
-    if (!healthChecksEnabled) {
-      return true;
-    }
-
-    const now = Date.now();
-    if (now - lastNetworkCheck.current < networkCheckInterval) {
-      return true; // Return true if we checked recently
-    }
-
-    try {
-      const response = await fetch(`${serverUrl}/health`, {
-        method: 'HEAD',
-        signal: AbortSignal.timeout(5000)
-      });
-      
-      if (response.ok) {
-        lastNetworkCheck.current = now;
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.warn('Health check failed:', error);
-      return false;
-    }
-  }, [serverUrl, healthChecksEnabled]);
-
-  // Add effect to save health check preference
+  // Save conversations to localStorage whenever they change
   useEffect(() => {
-    localStorage.setItem('healthChecksEnabled', healthChecksEnabled);
-  }, [healthChecksEnabled]);
+    localStorage.setItem(`conversations-${position}`, JSON.stringify(conversations));
+  }, [conversations, position]);
 
-  // Replace models prop usage with cached models
-  useEffect(() => {
-    const fetchModels = async () => {
-      const now = Date.now();
-      if (now - lastModelListCheck.current < modelListInterval) {
-        return; // Use cached models if checked recently
-      }
-
-      try {
-        const response = await fetch(`${serverUrl}/v1/models`, {
-          method: 'GET',
-          headers: { 'Cache-Control': 'no-cache' }
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          setCachedModels(data.data || []);
-          lastModelListCheck.current = now;
-        }
-      } catch (error) {
-        console.warn('Failed to fetch models:', error);
-      }
-    };
-
-    fetchModels();
-  }, [serverUrl]);
-
-  // Update model selection logic to use cached models
-  useEffect(() => {
-    if (cachedModels.length > 0 && !selectedModel) {
-      const savedModel = localStorage.getItem(`selectedModel-${position}`);
-      
-      // Only use saved model if it exists in current available models
-      if (savedModel && cachedModels.some(m => m.id === savedModel)) {
-        handleModelChange(savedModel);
-      } else {
-        // If no saved model or it's not available, select the first available model
-        handleModelChange(cachedModels[0].id);
-      }
-    }
-  }, [cachedModels, selectedModel, handleModelChange, position]);
-
-  // Update conversation messages
   const updateConversationMessages = useCallback((newMessages) => {
     setConversations(prev => prev.map(conv => 
       conv.id === currentConversationId
@@ -350,327 +253,23 @@ function ChatWindow({
     ));
   }, [currentConversationId]);
 
-  // Move cleanupConversation before handleConversationChange
-  const cleanupConversation = useCallback((conversationId) => {
-    // Abort any ongoing requests
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
+  const [inputValue, setInputValue] = useState('');
+  const [selectedModel, setSelectedModel] = useState(() => {
+    const savedModel = localStorage.getItem(`selectedModel-${position}`);
+    return savedModel && models.some(m => m.id === savedModel) ? savedModel : '';
+  });
 
-    // Clear streaming responses
-    setStreamingResponses(prev => ({
-      ...prev,
-      [position]: ''
-    }));
+  const [isModelSwitching, setIsModelSwitching] = useState(false);
+  const [brainstormEnabled, setBrainstormEnabled] = useState(() => {
+    const saved = localStorage.getItem(`brainstorm-enabled-${position}`);
+    return saved ? JSON.parse(saved) : false;
+  });
 
-    // Clear thinking state
-    setThinking(prev => ({
-      ...prev,
-      [position]: false
-    }));
+  const abortControllerRef = useRef(null);
+  const messageListRef = useRef(null);
+  const fileInputRef = useRef(null);
 
-    // Clear response buffer
-    responseBuffer.current = '';
-
-    // Clear any pending timeouts
-    if (updateTimeoutRef.current) {
-      clearTimeout(updateTimeoutRef.current);
-      updateTimeoutRef.current = null;
-    }
-  }, [position, setStreamingResponses, setThinking]);
-
-  // Handle conversation switch
-  const handleConversationChange = useCallback((newId) => {
-    if (!conversations.some(conv => conv.id === newId)) {
-      console.warn('Invalid conversation ID, selecting first available conversation');
-      newId = conversations[0]?.id || Date.now().toString();
-    }
-    
-    // Clean up the current conversation before switching
-    cleanupConversation(currentConversationId);
-    setCurrentConversationId(newId);
-  }, [conversations, currentConversationId, cleanupConversation]);
-
-  // Optimize streaming updates
-  const updateStreamingResponse = useCallback((newContent) => {
-    responseBuffer.current = newContent;
-    
-    if (updateTimeoutRef.current) {
-      clearTimeout(updateTimeoutRef.current);
-    }
-
-    updateTimeoutRef.current = setTimeout(() => {
-      setStreamingResponses(prev => ({
-        ...prev,
-        [position]: responseBuffer.current
-      }));
-    }, 1500); // 1.5 second debounce
-  }, [position, setStreamingResponses]);
-
-  // Optimize chat completion request
-  const handleSendMessage = async () => {
-    if (!inputValue.trim() || !selectedModel || isModelSwitching) return;
-
-    // Only check server health once per minute
-    const isServerHealthy = await checkServerHealth();
-    if (!isServerHealthy) {
-      const errorMessage = 'Cannot connect to server. Please check that LM Studio is running.';
-      updateConversationMessages([
-        ...currentConversation.messages,
-        {
-          content: errorMessage,
-          timestamp: new Date().toISOString(),
-          role: 'error',
-        }
-      ]);
-      return;
-    }
-
-    setStreamingResponses(prev => ({ ...prev, [position]: '' }));
-    responseBuffer.current = '';
-    
-    const newMessage = {
-      content: inputValue,
-      timestamp: new Date().toISOString(),
-      role: 'user',
-    };
-
-    const updatedMessages = [...currentConversation.messages, newMessage];
-    updateConversationMessages(updatedMessages);
-    setInputValue('');
-    setThinking(prev => ({ ...prev, [position]: true }));
-
-    try {
-      abortControllerRef.current = new AbortController();
-      const timeoutId = setTimeout(() => {
-        if (abortControllerRef.current) {
-          abortControllerRef.current.abort();
-        }
-      }, 180000);
-
-      const response = await fetch(`${serverUrl}/v1/chat/completions`, {
-        method: 'POST',
-        signal: abortControllerRef.current.signal,
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: selectedModel,
-          messages: updatedMessages.map(msg => ({
-            role: msg.role === 'error' ? 'assistant' : msg.role,
-            content: msg.content
-          })),
-          stream: true,
-          temperature: 0.7,
-          max_tokens: 2000,
-          options: {
-            load_model_only_when_needed: false,
-            unload_model_after_completion: false, // Never unload models
-            skip_embedding_model: true,
-            skip_model_load_test: true,
-            no_auto_model_selection: true,
-            unload_other_models: false // Never unload other models
-          }
-        })
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`Server returned ${response.status}: ${await response.text()}`);
-      }
-
-      if (response.body) {
-        const reader = response.body.getReader();
-        responseBuffer.current = '';
-        
-        try {
-          const responseText = await processStreamingResponse(reader);
-          
-          if (responseText) {
-            const newMessage = {
-              content: responseText,
-              timestamp: new Date().toISOString(),
-              role: 'assistant',
-            };
-
-            const updatedMessagesWithResponse = [...updatedMessages, newMessage];
-            updateConversationMessages(updatedMessagesWithResponse);
-
-            // If brainstorm is enabled, notify the other panel
-            if (brainstormEnabled) {
-              onBrainstormMessage?.(newMessage);
-            }
-          }
-        } finally {
-          if (updateTimeoutRef.current) {
-            clearTimeout(updateTimeoutRef.current);
-            updateTimeoutRef.current = null;
-          }
-
-          setStreamingResponses(prev => ({ ...prev, [position]: '' }));
-          setThinking(prev => ({ ...prev, [position]: false }));
-          responseBuffer.current = '';
-          abortControllerRef.current = null;
-        }
-      }
-    } catch (error) {
-      console.error('Error:', error);
-      let errorMessage = 'Unable to get response from LM Studio. ';
-      
-      try {
-        // Try to parse the error response
-        const errorData = error.message.includes('{') ? 
-          JSON.parse(error.message.substring(error.message.indexOf('{'))) : null;
-        
-        if (errorData?.error?.message) {
-          if (errorData.error.message.includes('Failed to load model')) {
-            errorMessage = `Model loading failed. Please ensure:\n` +
-              `1. The model file exists and is not corrupted\n` +
-              `2. You have sufficient RAM available\n` +
-              `3. Try restarting LM Studio\n\n` +
-              `Technical details: ${errorData.error.message}`;
-          } else {
-            errorMessage += errorData.error.message;
-          }
-        } else if (error.name === 'AbortError') {
-          errorMessage += 'Request timed out. The model might be too slow or not responding.';
-        } else if (error.message === 'Failed to fetch') {
-          errorMessage += `Please check that:\n1. LM Studio is still running\n2. Local Server is active\n3. Server address (${serverUrl}) is correct\n4. Your internet connection is stable`;
-        } else {
-          errorMessage += error.message;
-        }
-      } catch (parseError) {
-        // If we can't parse the error, just use the original error message
-        errorMessage += error.message;
-      }
-      
-      updateConversationMessages([
-        ...updatedMessages,
-        {
-          content: errorMessage,
-          timestamp: new Date().toISOString(),
-          role: 'error',
-        },
-      ]);
-      setThinking(prev => ({ ...prev, [position]: false }));
-    }
-  };
-
-  useEffect(() => {
-    localStorage.setItem(`conversations-${position}`, JSON.stringify(conversations));
-  }, [conversations, position]);
-
-  const scrollToBottom = useCallback(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, []);
-
-  useEffect(() => {
-    const scrollTimer = setTimeout(() => {
-      scrollToBottom();
-    }, 1000); // Delay scroll to 1 second
-
-    return () => clearTimeout(scrollTimer);
-  }, [currentConversation.messages, streamingResponse, scrollToBottom]);
-
-  useEffect(() => {
-    setStreamingResponses(prev => ({
-      ...prev,
-      [position]: ''
-    }));
-  }, [currentConversationId, position, setStreamingResponses]);
-
-  const handleClearChat = useCallback(() => {
-    updateConversationMessages([]); // Clear messages in current conversation
-    setStreamingResponses(prev => ({
-      ...prev,
-      [position]: ''
-    }));
-    setThinking(prev => ({
-      ...prev,
-      [position]: false
-    }));
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-  }, [position, setStreamingResponses, setThinking, updateConversationMessages]);
-
-  const handleMenuAction = useCallback((action) => {
-    switch (action) {
-      case 'new':
-        startNewConversation();
-        break;
-      case 'clear':
-        handleClearChat();
-        break;
-      case 'delete':
-        // Clean up the conversation before deleting
-        cleanupConversation(currentConversationId);
-        
-        setConversations(prev => {
-          const updatedConversations = prev.filter(conv => conv.id !== currentConversationId);
-          if (updatedConversations.length === 0) {
-            const newId = Date.now().toString();
-            const newConversation = {
-              id: newId,
-              name: 'New Conversation',
-              messages: [],
-              timestamp: new Date().toISOString()
-            };
-            return [newConversation];
-          }
-          // Switch to the first conversation in the list
-          setCurrentConversationId(updatedConversations[0].id);
-          return updatedConversations;
-        });
-        break;
-      default:
-        break;
-    }
-    setMenuAnchor(null);
-  }, [currentConversationId, handleClearChat, startNewConversation, cleanupConversation]);
-
-  const handleStopResponse = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-      setThinking(prev => ({ ...prev, [position]: false }));
-      setStreamingResponses(prev => ({ ...prev, [position]: '' }));
-    }
-  };
-
-  const updateConversationName = (id, firstMessage) => {
-    if (!firstMessage) return;
-    
-    // Extract first ~30 characters of the first message for the conversation name
-    const name = firstMessage.content.length > 30 
-      ? firstMessage.content.substring(0, 30) + '...'
-      : firstMessage.content;
-
-    setConversations(prev => 
-      prev.map(conv => 
-        conv.id === id 
-          ? { ...conv, name } 
-          : conv
-      )
-    );
-  };
-
-  // Batch updates for message list scrolling with longer delay
-  useEffect(() => {
-    const scrollTimer = setTimeout(() => {
-      scrollToBottom();
-    }, 1000); // Delay scroll to 1 second
-
-    return () => clearTimeout(scrollTimer);
-  }, [currentConversation.messages, streamingResponse, scrollToBottom]);
-
-  // Update streaming response handling
+  // Process streaming chunks
   const processStreamingChunk = useCallback((chunk) => {
     const lines = chunk.split('\n');
     let accumulatedContent = '';
@@ -694,9 +293,9 @@ function ChatWindow({
     return accumulatedContent;
   }, []);
 
-  const processStreamingResponse = async (reader, responseText = '', maxIterations = 1000) => {
+  const processStreamingResponse = useCallback(async (reader, responseText = '', maxIterations = 1000) => {
     let iterations = 0;
-    let accumulatedContent = responseBuffer.current || '';
+    let accumulatedContent = '';
 
     try {
       while (iterations < maxIterations) {
@@ -707,220 +306,221 @@ function ChatWindow({
         const chunk = new TextDecoder().decode(value);
         const newContent = processStreamingChunk(chunk);
         accumulatedContent += newContent;
-        responseText += newContent;
 
-        // Update the streaming response with the accumulated content
         setStreamingResponses(prev => ({
           ...prev,
           [position]: accumulatedContent
         }));
       }
 
-      return responseText;
+      if (accumulatedContent) {
+        updateConversationMessages([
+          ...currentConversation.messages,
+          {
+            content: accumulatedContent,
+            timestamp: new Date().toISOString(),
+            role: 'assistant',
+          }
+        ]);
+      }
+
+      return accumulatedContent;
     } catch (error) {
+      if (error.name === 'AbortError') {
+        console.log('Stream was aborted');
+        return accumulatedContent;
+      }
       console.error('Error processing stream:', error);
       throw error;
     }
-  };
+  }, [processStreamingChunk, position, setStreamingResponses, currentConversation, updateConversationMessages]);
 
-  // Update StreamingResponseComponent to handle paragraphs better
-  const StreamingResponseComponent = React.memo(({ content }) => (
-    content ? (
-      <Message align="left">
-        <MessageContent 
-          align="left"
-          sx={{ 
-            backgroundColor: theme => theme.palette.background.paper,
-            minWidth: '200px',
-            width: 'fit-content',
-            maxWidth: '70%'
-          }}
-        >
-          <ReactMarkdown 
-            components={{
-              p: ({ children }) => (
-                <Typography 
-                  variant="body1" 
-                  component="p" 
-                  sx={{ 
-                    mb: 1,
-                    '&:last-child': { mb: 0 }
-                  }}
-                >
-                  {children}
-                </Typography>
-              ),
-              pre: ({ node, ...props }) => (
-                <pre style={{ 
-                  backgroundColor: 'rgba(0, 0, 0, 0.1)',
-                  padding: '8px',
-                  borderRadius: '4px',
-                  overflowX: 'auto',
-                }} {...props} />
-              ),
-              code: ({ node, inline, ...props }) => (
-                inline ? 
-                  <code style={{ 
-                    backgroundColor: 'rgba(0, 0, 0, 0.1)',
-                    padding: '2px 4px',
-                    borderRadius: '3px',
-                  }} {...props} /> :
-                  <code {...props} />
-              ),
-            }}
-          >
-            {content}
-          </ReactMarkdown>
-        </MessageContent>
-      </Message>
-    ) : null
-  ));
+  // Rest of your state declarations
+  const [brainstormIterations, setBrainstormIterations] = useState(() => {
+    const saved = localStorage.getItem(`brainstorm-iterations-${position}`);
+    return saved ? JSON.parse(saved) : 0; // 0 means no iterations set, -1 means infinite
+  });
+  const [brainstormMenuAnchor, setBrainstormMenuAnchor] = useState(null);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editedName, setEditedName] = useState('');
+  const [menuAnchor, setMenuAnchor] = useState(null);
+  const [emojiAnchor, setEmojiAnchor] = useState(null);
+  const [uploadError, setUploadError] = useState('');
 
-  // Update ThinkingIndicator to be more precise
-  const ThinkingIndicator = React.memo(({ isThinking, onStop }) => (
-    isThinking && !streamingResponse && !currentConversation.messages.find(m => m.role === 'error') ? (
-      <Message align="left">
-        <MessageContent 
-          align="left" 
-          sx={{ 
-            backgroundColor: 'rgba(0, 0, 0, 0.2)',
-            minWidth: '200px',
-            width: 'fit-content',
-            maxWidth: '70%',
-            position: 'relative',
-            padding: '12px 16px',
-            '& pre': {
-              margin: 0,
-              padding: 0,
-              backgroundColor: 'transparent',
-              fontFamily: 'inherit',
-              whiteSpace: 'pre-wrap',
-              fontSize: '0.875rem',
-            }
-          }}
-        >
-          <Box sx={{ 
-            display: 'flex', 
-            flexDirection: 'column',
-            gap: 1,
-          }}>
-            <pre>{"<think>"}</pre>
-            <pre style={{ marginLeft: '8px' }}>
-              {"Processing request and generating response..."}
-            </pre>
-            <pre>{"</think>"}</pre>
-            <Box sx={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: 1,
-              mt: 1,
-              pt: 1,
-              borderTop: '1px solid rgba(255, 255, 255, 0.1)',
-            }}>
-              <CircularProgress size={16} />
-              <Typography>Thinking...</Typography>
-              <IconButton 
-                size="small" 
-                onClick={onStop}
-                sx={{ 
-                  ml: 'auto',
-                  bgcolor: 'error.main',
-                  color: 'error.contrastText',
-                  '&:hover': {
-                    bgcolor: 'error.dark',
-                  },
-                  width: 24,
-                  height: 24,
-                }}
-              >
-                <StopIcon sx={{ fontSize: 16 }} />
-              </IconButton>
-            </Box>
-          </Box>
-        </MessageContent>
-      </Message>
-    ) : null
-  ));
+  // Refs
+  const messagesEndRef = useRef(null);
+  const responseBuffer = useRef('');
+  const updateTimeoutRef = useRef(null);
 
-  // Update model status when a model is successfully used
-  const updateModelStatus = useCallback((modelId, isAvailable) => {
-    setModelStatus(prev => ({
-      ...prev,
-      [modelId]: {
-        available: isAvailable,
-        lastChecked: Date.now()
-      }
-    }));
+  // Add health check state
+  const [lastHealthCheck, setLastHealthCheck] = useState(() => {
+    return parseInt(localStorage.getItem('lastHealthCheck') || '0');
+  });
+
+  // Add health check toggle state
+  const [healthChecksEnabled, setHealthChecksEnabled] = useState(() => {
+    return localStorage.getItem('healthChecksEnabled') !== 'false';
+  });
+
+  // Add model status tracking
+  const [modelStatus, setModelStatus] = useState({});
+  const lastNetworkCheck = useRef(0);
+  const networkCheckInterval = 60000; // 1 minute in milliseconds
+
+  // Cache models list with a longer interval
+  const [cachedModels, setCachedModels] = useState([]);
+  const modelListInterval = 60000; // 1 minute
+  const lastModelListCheck = useRef(0);
+
+  // Add state for scroll management
+  const [userHasScrolled, setUserHasScrolled] = useState(false);
+
+  // Function to check if scrolled to bottom
+  const isScrolledToBottom = useCallback(() => {
+    if (!messageListRef.current) return true;
+    const { scrollHeight, scrollTop, clientHeight } = messageListRef.current;
+    // Consider "almost" at bottom (within 100px) as at bottom
+    return scrollHeight - scrollTop - clientHeight < 100;
   }, []);
 
-  // Check if we need to verify model availability
-  const shouldCheckModel = useCallback((modelId) => {
-    const status = modelStatus[modelId];
-    if (!status) return true;
-    
-    const now = Date.now();
-    return now - status.lastChecked > networkCheckInterval;
-  }, [modelStatus]);
+  // Handle scroll events
+  const handleScroll = useCallback((e) => {
+    // Only set userHasScrolled if the scroll was manual (wheel or drag)
+    if (e.type === 'wheel' || e.type === 'touchmove') {
+      const wasAtBottom = isScrolledToBottom();
+      setUserHasScrolled(!wasAtBottom);
+    }
+  }, [isScrolledToBottom]);
 
-  // Add model unload/refresh function
+  // Scroll to bottom function
+  const scrollToBottom = useCallback(() => {
+    if (messagesEndRef.current && (!userHasScrolled || isScrolledToBottom())) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [userHasScrolled, isScrolledToBottom]);
+
+  // Update scroll effect
+  useEffect(() => {
+    if (!messageListRef.current) return;
+    
+    const messageList = messageListRef.current;
+    messageList.addEventListener('wheel', handleScroll);
+    messageList.addEventListener('touchmove', handleScroll);
+    
+    return () => {
+      messageList.removeEventListener('wheel', handleScroll);
+      messageList.removeEventListener('touchmove', handleScroll);
+    };
+  }, [handleScroll]);
+
+  // Update auto-scroll effect
+  useEffect(() => {
+    const scrollTimer = setTimeout(() => {
+      scrollToBottom();
+    }, 100);
+
+    return () => clearTimeout(scrollTimer);
+  }, [currentConversation.messages, streamingResponse, scrollToBottom]);
+
+  // Update loadedModels state to use global state
+  const [loadedModels, setLoadedModels] = useState(() => {
+    const saved = localStorage.getItem('loadedModels');
+    return new Set(saved ? JSON.parse(saved) : []);
+  });
+
+  // Save loadedModels to localStorage whenever it changes
+  useEffect(() => {
+    if (loadedModels.size > 0) {
+      localStorage.setItem('loadedModels', JSON.stringify(Array.from(loadedModels)));
+    }
+  }, [loadedModels]);
+
+  // Update handleModelChange to prevent unnecessary model loading checks
+  const handleModelChange = useCallback(async (modelId) => {
+    if (modelId === selectedModel) return;
+    
+    logDebug('ModelChange', 'Starting model change', { from: selectedModel, to: modelId });
+    setIsModelSwitching(true);
+    
+    try {
+      // Only do a load check if we haven't seen this model before
+      if (!loadedModels.has(modelId)) {
+        const response = await fetch(`${serverUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: modelId,
+            messages: [{ role: 'system', content: 'Hello' }],
+            stream: false,
+            max_tokens: 1
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed to load model: ${response.statusText}`);
+        }
+        
+        // Add to loaded models
+        setLoadedModels(prev => new Set([...prev, modelId]));
+      }
+      
+      // Update selected model
+      setSelectedModel(modelId);
+      localStorage.setItem(`selectedModel-${position}`, modelId);
+      onModelSelect?.(position, modelId);
+      
+    } catch (error) {
+      console.error('Error switching model:', error);
+    } finally {
+      setIsModelSwitching(false);
+    }
+  }, [position, onModelSelect, selectedModel, serverUrl, loadedModels]);
+
+  // Remove model unloading completely - let LM Studio handle it
   const handleModelAction = useCallback(async (action) => {
     if (!selectedModel) return;
     
+    logDebug('ModelAction', 'Starting model action', { 
+      action, 
+      model: selectedModel 
+    });
+    
     setIsModelSwitching(true);
     try {
-      if (action === 'unload') {
-        await fetch(`${serverUrl}/v1/model/unload`, {
+      if (action === 'refresh') {
+        const response = await fetch(`${serverUrl}/v1/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
             model: selectedModel,
-            options: {
-              unload_other_models: false // Never unload other models
-            }
-          })
-        });
-      } else if (action === 'refresh') {
-        // First unload
-        await fetch(`${serverUrl}/v1/model/unload`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: selectedModel,
-            options: {
-              unload_other_models: false
-            }
+            messages: [{ role: 'system', content: 'Hello' }],
+            stream: false,
+            max_tokens: 1
           })
         });
         
-        // Then force a reload by sending a test completion
-        await fetch(`${serverUrl}/v1/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: selectedModel,
-            messages: [{ role: 'system', content: 'test' }],
-            stream: false,
-            max_tokens: 1,
-            options: {
-              load_model_only_when_needed: false,
-              unload_model_after_completion: false,
-              unload_other_models: false
-            }
-          })
-        });
+        if (response.ok) {
+          setLoadedModels(prev => new Set([...prev, selectedModel]));
+        }
       }
+      // Remove unload action completely
     } catch (error) {
       console.warn(`Failed to ${action} model:`, error);
     } finally {
       setIsModelSwitching(false);
     }
   }, [selectedModel, serverUrl]);
+
+  // Add effect to maintain model loaded state
+  useEffect(() => {
+    if (selectedModel && !loadedModels.has(selectedModel)) {
+      setLoadedModels(prev => new Set([...prev, selectedModel]));
+    }
+  }, [selectedModel, loadedModels]);
 
   // Add back the missing utility functions
   const getModelColor = (modelName) => {
@@ -1057,8 +657,7 @@ function ChatWindow({
   };
 
   // Add back MessageComponent
-  const MessageComponent = React.memo(({ message, align }) => {
-    const [menuAnchor, setMenuAnchor] = useState(null);
+  const MessageComponent = memo(({ message, align }) => {
     const [isDragging, setIsDragging] = useState(false);
 
     const handleDragStart = (e) => {
@@ -1111,40 +710,12 @@ function ChatWindow({
       setTimeout(() => setIsDragging(false), 100);
     };
 
-    const handleMessageClick = (event) => {
-      if (!isDragging) {  // Only show menu if not dragging
-        event.preventDefault();
-        setMenuAnchor(event.currentTarget);
-      }
-    };
-
-    const handleAddToNotebook = useCallback(() => {
-      const event = new CustomEvent('addToNotebook', {
-        detail: {
-          type: 'chat_message',
-          content: message.content,
-          timestamp: message.timestamp,
-          role: message.role,
-          metadata: {
-            model: selectedModel,
-            modelName: models.find(m => m.id === selectedModel)?.name,
-            conversationId: currentConversationId,
-            conversationName: currentConversation.name
-          },
-          source: 'menu'
-        }
-      });
-      window.dispatchEvent(event);
-      setMenuAnchor(null);
-    }, [message]);
-
     return (
       <Message 
         align={align}
         draggable={true}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
-        onClick={handleMessageClick}
         sx={{ 
           cursor: isDragging ? 'grabbing' : 'grab',
           '&:hover': {
@@ -1214,49 +785,308 @@ function ChatWindow({
             </Typography>
           </>
         )}
-        <Menu
-          anchorEl={menuAnchor}
-          open={Boolean(menuAnchor)}
-          onClose={() => setMenuAnchor(null)}
-          anchorOrigin={{
-            vertical: 'bottom',
-            horizontal: align === 'right' ? 'right' : 'left',
-          }}
-          transformOrigin={{
-            vertical: 'top',
-            horizontal: align === 'right' ? 'right' : 'left',
-          }}
-        >
-          <MenuItem onClick={handleAddToNotebook}>
-            <NoteAddIcon sx={{ mr: 1, fontSize: 20 }} />
-            Add to Notebook
-          </MenuItem>
-        </Menu>
       </Message>
     );
   });
-
-  // Add effect to watch for messages from the other panel
-  useEffect(() => {
-    if (!brainstormEnabled || !selectedModel || isThinking || !otherPanelMessages?.length) return;
-
-    const lastMessage = otherPanelMessages[otherPanelMessages.length - 1];
-    if (lastMessage?.role === 'assistant' && !lastMessage.processed) {
-      // Mark the message as processed to prevent loops
-      lastMessage.processed = true;
-      
-      // Add a small delay to make the conversation feel more natural
-      setTimeout(() => {
-        setInputValue(lastMessage.content);
-        handleSendMessage();
-      }, 1000);
-    }
-  }, [brainstormEnabled, otherPanelMessages, selectedModel, isThinking]);
 
   // Save brainstorm state
   useEffect(() => {
     localStorage.setItem(`brainstorm-enabled-${position}`, brainstormEnabled);
   }, [brainstormEnabled, position]);
+
+  // Save brainstorm iterations to localStorage
+  useEffect(() => {
+    localStorage.setItem(`brainstorm-iterations-${position}`, brainstormIterations);
+  }, [brainstormIterations, position]);
+
+  const handleEditName = () => {
+    setEditedName(currentConversation.name);
+    setIsEditingName(true);
+  };
+
+  const handleSaveName = () => {
+    if (editedName.trim()) {
+      setConversations(prev => prev.map(conv => 
+        conv.id === currentConversationId 
+          ? { ...conv, name: editedName.trim() }
+          : conv
+      ));
+    }
+    setIsEditingName(false);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditingName(false);
+    setEditedName('');
+  };
+
+  // Add brainstorm menu handler
+  const handleBrainstormContextMenu = (event) => {
+    event.preventDefault();
+    setBrainstormMenuAnchor(event.currentTarget);
+  };
+
+  // Update the brainstorm menu items to save state
+  const handleBrainstormIterationChange = (count) => {
+    setBrainstormIterations(count);
+    setBrainstormMenuAnchor(null);
+    // If iterations are set but brainstorm is not enabled, enable it
+    if (!brainstormEnabled) {
+      setBrainstormEnabled(true);
+    }
+  };
+
+  const handleDownloadBrainstorm = useCallback(() => {
+    const formatMessage = (msg) => {
+      const timestamp = new Date(msg.timestamp).toLocaleString();
+      const model = msg.metadata?.modelName || 'Unknown Model';
+      const role = msg.role === 'user' ? 'Human' : 'Assistant';
+      return `[${timestamp}] ${role} (${model}):\n${msg.content}\n\n`;
+    };
+
+    const text = currentConversation.messages.map(formatMessage).join('');
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `conversation-${currentConversation.name}-${new Date().toISOString()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [currentConversation]);
+
+  // Add the missing handleBrainstormToggle function
+  const handleBrainstormToggle = useCallback(() => {
+    const newState = !brainstormEnabled;
+    setBrainstormEnabled(newState);
+    
+    // Notify other panel
+    const event = new CustomEvent('brainstormSync', {
+      detail: {
+        enabled: newState,
+        iterations: brainstormIterations,
+        fromPosition: position
+      }
+    });
+    window.dispatchEvent(event);
+  }, [brainstormEnabled, brainstormIterations, position]);
+
+  // Update handleSendMessage to properly handle message state
+  const handleSendMessage = useCallback(async () => {
+    console.log('Send attempt:', {
+      hasInput: Boolean(inputValue.trim()),
+      selectedModel,
+      isModelSwitching,
+      currentMessages: currentConversation.messages
+    });
+
+    if (!inputValue.trim() || !selectedModel || isModelSwitching) {
+      console.log('Send blocked:', {
+        noInput: !inputValue.trim(),
+        noModel: !selectedModel,
+        switching: isModelSwitching
+      });
+      return;
+    }
+
+    const message = inputValue.trim();
+    const currentMessages = [...currentConversation.messages];
+    
+    console.log('Sending message:', {
+      message,
+      model: selectedModel,
+      position
+    });
+    
+    setInputValue('');
+    
+    const userMessage = {
+      content: message,
+      timestamp: new Date().toISOString(),
+      role: 'user',
+    };
+    
+    updateConversationMessages([...currentMessages, userMessage]);
+    onMessageSubmit?.(message);
+
+    try {
+      setThinking(prev => ({ ...prev, [position]: true }));
+      setStreamingResponses(prev => ({ ...prev, [position]: '' }));
+
+      console.log('Fetching response from:', serverUrl);
+      abortControllerRef.current = new AbortController();
+
+      const response = await fetch(`${serverUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          messages: [...currentMessages, userMessage].map(msg => ({
+            role: msg.role,
+            content: msg.content
+          })),
+          stream: true
+        }),
+        signal: abortControllerRef.current.signal
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      await processStreamingResponse(reader);
+      
+    } catch (error) {
+      console.error('Send error:', error);
+      if (error.name === 'AbortError') {
+        console.log('Request was aborted');
+        return;
+      }
+      console.error('Error sending message:', error);
+      updateConversationMessages([
+        ...currentMessages,
+        userMessage,
+        {
+          content: `Error: ${error.message}`,
+          timestamp: new Date().toISOString(),
+          role: 'error',
+        }
+      ]);
+    } finally {
+      setThinking(prev => ({ ...prev, [position]: false }));
+      abortControllerRef.current = null;
+      setStreamingResponses(prev => ({ ...prev, [position]: '' }));
+    }
+  }, [
+    inputValue,
+    selectedModel,
+    isModelSwitching,
+    currentConversation.messages,
+    updateConversationMessages,
+    setStreamingResponses,
+    position,
+    serverUrl,
+    processStreamingResponse,
+    setThinking,
+    onMessageSubmit
+  ]);
+
+  // Update handleStopResponse to properly handle message state
+  const handleStopResponse = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      
+      // Immediately update UI state
+      setThinking(prev => ({ ...prev, [position]: false }));
+      
+      // Add the partial response as a message if there is any
+      if (streamingResponse) {
+        const currentMessages = [...currentConversation.messages];
+        updateConversationMessages([
+          ...currentMessages,
+          {
+            content: streamingResponse,
+            timestamp: new Date().toISOString(),
+            role: 'assistant',
+          }
+        ]);
+      }
+      // Clear streaming response
+      setStreamingResponses(prev => ({ ...prev, [position]: '' }));
+    }
+  }, [position, setThinking, streamingResponse, currentConversation.messages, updateConversationMessages, setStreamingResponses]);
+
+  // Add handleNewConversation function
+  const handleNewConversation = useCallback(() => {
+    const newConversation = {
+      id: Date.now().toString(),
+      name: 'New Conversation',
+      timestamp: new Date().toISOString(),
+      messages: []
+    };
+    setConversations(prev => [newConversation, ...prev]);
+    setCurrentConversationId(newConversation.id);
+  }, []);
+
+  // Add handleMenuAction function
+  const handleMenuAction = useCallback(async (action) => {
+    switch (action) {
+      case 'new':
+        handleNewConversation();
+        break;
+      case 'clear':
+        updateConversationMessages([]);
+        break;
+      case 'delete':
+        setConversations(prev => {
+          const updatedConversations = prev.filter(conv => conv.id !== currentConversationId);
+          if (updatedConversations.length === 0) {
+            const newConversation = {
+              id: Date.now().toString(),
+              name: 'New Conversation',
+              messages: [],
+              timestamp: new Date().toISOString()
+            };
+            return [newConversation];
+          }
+          setCurrentConversationId(updatedConversations[0].id);
+          return updatedConversations;
+        });
+        break;
+      default:
+        break;
+    }
+    setMenuAnchor(null);
+  }, [currentConversationId, handleNewConversation, updateConversationMessages]);
+
+  // Add ThinkingIndicator component
+  const ThinkingIndicator = memo(({ isThinking, onStop }) => (
+    isThinking ? (
+      <Message align="left">
+        <MessageContent 
+          align="left" 
+          sx={{ 
+            backgroundColor: 'rgba(0, 0, 0, 0.2)',
+            minWidth: '200px',
+            width: 'fit-content',
+            maxWidth: '70%',
+            position: 'relative',
+            padding: '12px 16px'
+          }}
+        >
+          <Box sx={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: 1
+          }}>
+            <CircularProgress size={16} />
+            <Typography>Thinking...</Typography>
+            <IconButton 
+              size="small" 
+              onClick={onStop}
+              sx={{ 
+                ml: 'auto',
+                bgcolor: 'error.main',
+                color: 'error.contrastText',
+                '&:hover': {
+                  bgcolor: 'error.dark',
+                },
+                width: 24,
+                height: 24,
+              }}
+            >
+              <StopIcon sx={{ fontSize: 16 }} />
+            </IconButton>
+          </Box>
+        </MessageContent>
+      </Message>
+    ) : null
+  ));
 
   return (
     <StyledPaper elevation={3}>
@@ -1300,20 +1130,6 @@ function ChatWindow({
             </Avatar>
           </Tooltip>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <ConversationSelector size="small">
-              <Select
-                value={currentConversationId}
-                onChange={(e) => handleConversationChange(e.target.value)}
-                variant="standard"
-                sx={{ fontSize: '0.875rem' }}
-              >
-                {conversations.map((conv) => (
-                  <MenuItem key={conv.id} value={conv.id}>
-                    {conv.name || 'New Conversation'}
-                  </MenuItem>
-                ))}
-              </Select>
-            </ConversationSelector>
             {models.length > 0 ? (
               <ModelSelector size="small" sx={{ minWidth: 200 }}>
                 <Select
@@ -1323,7 +1139,20 @@ function ChatWindow({
                   displayEmpty
                 >
                   {models.map((model) => (
-                    <MenuItem key={model.id} value={model.id}>
+                    <MenuItem 
+                      key={model.id} 
+                      value={model.id}
+                      sx={{ 
+                        color: loadedModels.has(model.id) ? '#2e7d32' : '#ed6c02',
+                        fontWeight: loadedModels.has(model.id) ? 600 : 400,
+                        '&:hover': {
+                          backgroundColor: loadedModels.has(model.id) 
+                            ? 'rgba(46, 125, 50, 0.08)'  // Green hover
+                            : 'rgba(237, 108, 2, 0.08)'  // Orange hover
+                        }
+                      }}
+                    >
+                      {loadedModels.has(model.id) ? '● ' : '○ '}
                       {model.name}
                     </MenuItem>
                   ))}
@@ -1337,9 +1166,10 @@ function ChatWindow({
           </Box>
         </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
-          <Tooltip title={brainstormEnabled ? "AI Brainstorm Active" : "Enable AI Brainstorm"}>
+          <Tooltip title={brainstormEnabled ? "AI Brainstorm Active" : "Enable AI Brainstorm\nRight-click to set iterations"}>
             <IconButton 
-              onClick={() => setBrainstormEnabled(prev => !prev)}
+              onClick={handleBrainstormToggle}
+              onContextMenu={handleBrainstormContextMenu}
               color={brainstormEnabled ? "primary" : "default"}
               sx={{
                 position: 'relative',
@@ -1376,7 +1206,7 @@ function ChatWindow({
             </IconButton>
           </Tooltip>
           <IconButton 
-            onClick={startNewConversation}
+            onClick={handleNewConversation}
             title="New Conversation"
           >
             <AddIcon />
@@ -1387,19 +1217,37 @@ function ChatWindow({
         </Box>
       </ChatHeader>
 
-      <MessageList>
-        {currentConversation.messages.map((msg, index) => (
+      <MessageList
+        ref={messageListRef}
+        onScroll={(e) => {
+          if (isScrolledToBottom()) {
+            setUserHasScrolled(false);
+          }
+        }}
+      >
+        {currentConversation?.messages?.map((msg, index) => (
           <MessageComponent
-            key={`${msg.timestamp}-${index}`}
+            key={`${msg.timestamp}-${index}-${msg.content.substring(0, 20)}`}
             message={msg}
             align={msg.role === 'user' ? 'right' : 'left'}
           />
         ))}
-        <StreamingResponseComponent content={streamingResponse} />
-        <ThinkingIndicator 
-          isThinking={isThinking} 
-          onStop={handleStopResponse}
-        />
+        {streamingResponse && (
+          <MessageComponent
+            message={{
+              content: streamingResponse,
+              timestamp: new Date().toISOString(),
+              role: 'assistant'
+            }}
+            align="left"
+          />
+        )}
+        {isThinking && (
+          <ThinkingIndicator 
+            isThinking={isThinking} 
+            onStop={handleStopResponse}
+          />
+        )}
         <div ref={messagesEndRef} />
       </MessageList>
 
@@ -1527,7 +1375,7 @@ function ChatWindow({
               endAdornment: (
                 <InputAdornment position="end">
                   <IconButton
-                    onClick={handleSendMessage}
+                    onClick={() => handleSendMessage()}
                     disabled={!inputValue.trim() || !selectedModel}
                     color="primary"
                   >
@@ -1564,22 +1412,91 @@ function ChatWindow({
         <MenuItem onClick={() => handleMenuAction('delete')}>
           Delete Current Conversation
         </MenuItem>
+        <MenuItem onClick={handleDownloadBrainstorm}>
+          Download Conversation
+        </MenuItem>
         <MenuItem onClick={() => setHealthChecksEnabled(prev => !prev)}>
           {healthChecksEnabled ? '✓ ' : ''} Health Checks Enabled
         </MenuItem>
         <Divider />
-        <MenuItem 
-          onClick={() => handleModelAction('unload')}
-          disabled={!selectedModel || isModelSwitching}
-        >
-          Unload Current Model
-        </MenuItem>
         <MenuItem 
           onClick={() => handleModelAction('refresh')}
           disabled={!selectedModel || isModelSwitching}
         >
           Refresh Current Model
         </MenuItem>
+      </Menu>
+
+      <ConversationHeader>
+        <ConversationName>
+          {isEditingName ? (
+            <EditableTitle>
+              <input
+                value={editedName}
+                onChange={(e) => setEditedName(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSaveName()}
+                autoFocus
+              />
+              <IconButton size="small" onClick={handleSaveName}>
+                <CheckIcon fontSize="small" />
+              </IconButton>
+              <IconButton size="small" onClick={handleCancelEdit}>
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            </EditableTitle>
+          ) : (
+            <>
+              <Typography variant="h6" component="div">
+                {currentConversation.name}
+              </Typography>
+              <IconButton size="small" onClick={handleEditName}>
+                <EditIcon fontSize="small" />
+              </IconButton>
+              <Box className="timestamp-group">
+                <Typography className="timestamp" component="span">
+                  {new Date(currentConversation.timestamp).toLocaleString()}
+                </Typography>
+                <Button
+                  startIcon={<AddIcon />}
+                  onClick={handleNewConversation}
+                  size="small"
+                >
+                  New Chat
+                </Button>
+                <Select
+                  value={currentConversationId}
+                  onChange={(e) => setCurrentConversationId(e.target.value)}
+                  size="small"
+                  sx={{ minWidth: 120 }}
+                >
+                  {conversations.map(conv => (
+                    <MenuItem key={conv.id} value={conv.id}>
+                      {conv.name} - {new Date(conv.timestamp).toLocaleDateString()}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </Box>
+            </>
+          )}
+        </ConversationName>
+      </ConversationHeader>
+
+      <Menu
+        anchorEl={brainstormMenuAnchor}
+        open={Boolean(brainstormMenuAnchor)}
+        onClose={() => setBrainstormMenuAnchor(null)}
+      >
+        <MenuItem onClick={() => handleBrainstormIterationChange(-1)}>
+          Infinite Iterations
+        </MenuItem>
+        {[1, 2, 3, 5, 10].map(count => (
+          <MenuItem 
+            key={count}
+            onClick={() => handleBrainstormIterationChange(count)}
+          >
+            {count} Iteration{count > 1 ? 's' : ''}
+          </MenuItem>
+        ))}
       </Menu>
     </StyledPaper>
   );

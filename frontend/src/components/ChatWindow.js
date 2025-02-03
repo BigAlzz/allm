@@ -222,28 +222,51 @@ function ChatWindow({
   onMessageSubmit,
   onModelSelect,
 }) {
-  const [conversations, setConversations] = useState(() => {
-    const saved = localStorage.getItem(`conversations-${position}`);
-    return saved ? JSON.parse(saved) : [{
-      id: Date.now(),
-      name: 'New Conversation',
-      timestamp: new Date().toISOString(),
-      messages: []
-    }];
-  });
+  // Initialize all state without localStorage
+  const [conversations, setConversations] = useState([{
+    id: Date.now().toString(),
+    name: 'New Conversation',
+    timestamp: new Date().toISOString(),
+    messages: []
+  }]);
 
-  const [currentConversationId, setCurrentConversationId] = useState(() => {
-    return conversations[0]?.id;
-  });
+  const [currentConversationId, setCurrentConversationId] = useState(() => conversations[0].id);
+  const [inputValue, setInputValue] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');
+  const [isModelSwitching, setIsModelSwitching] = useState(false);
+  const [brainstormEnabled, setBrainstormEnabled] = useState(false);
+  const [brainstormIterations, setBrainstormIterations] = useState(0);
+  const [brainstormMenuAnchor, setBrainstormMenuAnchor] = useState(null);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editedName, setEditedName] = useState('');
+  const [menuAnchor, setMenuAnchor] = useState(null);
+  const [emojiAnchor, setEmojiAnchor] = useState(null);
+  const [uploadError, setUploadError] = useState('');
+  const [userHasScrolled, setUserHasScrolled] = useState(false);
+  const [healthChecksEnabled, setHealthChecksEnabled] = useState(true);
+  const [lastHealthCheck, setLastHealthCheck] = useState(0);
+  const [modelStatus, setModelStatus] = useState({});
+  const [cachedModels, setCachedModels] = useState([]);
+  const [loadedModels, setLoadedModels] = useState(new Set());
+
+  // Initialize all refs
+  const abortControllerRef = useRef(null);
+  const messageListRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const messagesEndRef = useRef(null);
+  const responseBuffer = useRef('');
+  const updateTimeoutRef = useRef(null);
+  const lastNetworkCheck = useRef(0);
+  const lastModelListCheck = useRef(0);
+
+  // Constants
+  const networkCheckInterval = 60000; // 1 minute in milliseconds
+  const modelListInterval = 60000; // 1 minute
 
   const currentConversation = useMemo(() => {
-    return conversations.find(c => c.id === currentConversationId) || conversations[0];
+    const found = conversations.find(c => c.id === currentConversationId);
+    return found || conversations[0] || { id: Date.now().toString(), name: 'New Conversation', messages: [], timestamp: new Date().toISOString() };
   }, [conversations, currentConversationId]);
-
-  // Save conversations to localStorage whenever they change
-  useEffect(() => {
-    localStorage.setItem(`conversations-${position}`, JSON.stringify(conversations));
-  }, [conversations, position]);
 
   const updateConversationMessages = useCallback((newMessages) => {
     setConversations(prev => prev.map(conv => 
@@ -253,23 +276,6 @@ function ChatWindow({
     ));
   }, [currentConversationId]);
 
-  const [inputValue, setInputValue] = useState('');
-  const [selectedModel, setSelectedModel] = useState(() => {
-    const savedModel = localStorage.getItem(`selectedModel-${position}`);
-    return savedModel && models.some(m => m.id === savedModel) ? savedModel : '';
-  });
-
-  const [isModelSwitching, setIsModelSwitching] = useState(false);
-  const [brainstormEnabled, setBrainstormEnabled] = useState(() => {
-    const saved = localStorage.getItem(`brainstorm-enabled-${position}`);
-    return saved ? JSON.parse(saved) : false;
-  });
-
-  const abortControllerRef = useRef(null);
-  const messageListRef = useRef(null);
-  const fileInputRef = useRef(null);
-
-  // Process streaming chunks
   const processStreamingChunk = useCallback((chunk) => {
     const lines = chunk.split('\n');
     let accumulatedContent = '';
@@ -281,8 +287,20 @@ function ChatWindow({
         const jsonStr = line.replace(/^data: /, '');
         const data = JSON.parse(jsonStr);
 
-        if (data.choices && data.choices[0]?.delta?.content) {
-          accumulatedContent += data.choices[0].delta.content;
+        // Handle different model response formats
+        if (data.choices && data.choices[0]) {
+          // Standard format (used by most models including Hermes)
+          if (data.choices[0].delta?.content) {
+            accumulatedContent += data.choices[0].delta.content;
+          }
+          // Alternative format (used by some models like Qwen)
+          else if (data.choices[0].text) {
+            accumulatedContent += data.choices[0].text;
+          }
+          // Handle content directly in the choice (some other models)
+          else if (data.choices[0].content) {
+            accumulatedContent += data.choices[0].content;
+          }
         }
       } catch (e) {
         console.warn('Error parsing chunk:', e);
@@ -313,16 +331,26 @@ function ChatWindow({
         }));
       }
 
-      if (accumulatedContent) {
-        updateConversationMessages([
-          ...currentConversation.messages,
-          {
-            content: accumulatedContent,
-            timestamp: new Date().toISOString(),
-            role: 'assistant',
+      // Always update messages when streaming is complete
+      setConversations(prev => {
+        const updatedConversations = prev.map(conv => {
+          if (conv.id === currentConversationId) {
+            return {
+              ...conv,
+              messages: [
+                ...conv.messages,
+                {
+                  content: accumulatedContent,
+                  timestamp: new Date().toISOString(),
+                  role: 'assistant'
+                }
+              ]
+            };
           }
-        ]);
-      }
+          return conv;
+        });
+        return updatedConversations;
+      });
 
       return accumulatedContent;
     } catch (error) {
@@ -332,48 +360,50 @@ function ChatWindow({
       }
       console.error('Error processing stream:', error);
       throw error;
+    } finally {
+      // Clear streaming response after updating conversations
+      setStreamingResponses(prev => ({
+        ...prev,
+        [position]: ''
+      }));
     }
-  }, [processStreamingChunk, position, setStreamingResponses, currentConversation, updateConversationMessages]);
+  }, [position, setStreamingResponses, currentConversationId, processStreamingChunk, setConversations]);
 
-  // Rest of your state declarations
-  const [brainstormIterations, setBrainstormIterations] = useState(() => {
-    const saved = localStorage.getItem(`brainstorm-iterations-${position}`);
-    return saved ? JSON.parse(saved) : 0; // 0 means no iterations set, -1 means infinite
-  });
-  const [brainstormMenuAnchor, setBrainstormMenuAnchor] = useState(null);
-  const [isEditingName, setIsEditingName] = useState(false);
-  const [editedName, setEditedName] = useState('');
-  const [menuAnchor, setMenuAnchor] = useState(null);
-  const [emojiAnchor, setEmojiAnchor] = useState(null);
-  const [uploadError, setUploadError] = useState('');
+  // Add cleanup effect
+  useEffect(() => {
+    return () => {
+      // Clear streaming state on unmount
+      setStreamingResponses(prev => ({
+        ...prev,
+        [position]: ''
+      }));
+      setThinking(prev => ({
+        ...prev,
+        [position]: false
+      }));
+      
+      // Clear any ongoing requests
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
 
-  // Refs
-  const messagesEndRef = useRef(null);
-  const responseBuffer = useRef('');
-  const updateTimeoutRef = useRef(null);
+      // Clear any pending timeouts
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
+      }
 
-  // Add health check state
-  const [lastHealthCheck, setLastHealthCheck] = useState(() => {
-    return parseInt(localStorage.getItem('lastHealthCheck') || '0');
-  });
-
-  // Add health check toggle state
-  const [healthChecksEnabled, setHealthChecksEnabled] = useState(() => {
-    return localStorage.getItem('healthChecksEnabled') !== 'false';
-  });
-
-  // Add model status tracking
-  const [modelStatus, setModelStatus] = useState({});
-  const lastNetworkCheck = useRef(0);
-  const networkCheckInterval = 60000; // 1 minute in milliseconds
-
-  // Cache models list with a longer interval
-  const [cachedModels, setCachedModels] = useState([]);
-  const modelListInterval = 60000; // 1 minute
-  const lastModelListCheck = useRef(0);
-
-  // Add state for scroll management
-  const [userHasScrolled, setUserHasScrolled] = useState(false);
+      // Reset all refs
+      abortControllerRef.current = null;
+      messageListRef.current = null;
+      fileInputRef.current = null;
+      messagesEndRef.current = null;
+      responseBuffer.current = '';
+      updateTimeoutRef.current = null;
+      lastNetworkCheck.current = 0;
+      lastModelListCheck.current = 0;
+    };
+  }, [position, setStreamingResponses, setThinking]);
 
   // Function to check if scrolled to bottom
   const isScrolledToBottom = useCallback(() => {
@@ -422,24 +452,14 @@ function ChatWindow({
     return () => clearTimeout(scrollTimer);
   }, [currentConversation.messages, streamingResponse, scrollToBottom]);
 
-  // Update loadedModels state to use global state
-  const [loadedModels, setLoadedModels] = useState(() => {
-    const saved = localStorage.getItem('loadedModels');
-    return new Set(saved ? JSON.parse(saved) : []);
-  });
-
-  // Save loadedModels to localStorage whenever it changes
-  useEffect(() => {
-    if (loadedModels.size > 0) {
-      localStorage.setItem('loadedModels', JSON.stringify(Array.from(loadedModels)));
-    }
-  }, [loadedModels]);
-
-  // Update handleModelChange to prevent unnecessary model loading checks
+  // Update handleModelChange to not use localStorage
   const handleModelChange = useCallback(async (modelId) => {
-    if (modelId === selectedModel) return;
+    if (!modelId || modelId === selectedModel) return;
     
-    logDebug('ModelChange', 'Starting model change', { from: selectedModel, to: modelId });
+    logDebug('ModelChange', 'Starting model change', { 
+      from: selectedModel || 'none', 
+      to: modelId 
+    });
     setIsModelSwitching(true);
     
     try {
@@ -462,13 +482,10 @@ function ChatWindow({
           throw new Error(`Failed to load model: ${response.statusText}`);
         }
         
-        // Add to loaded models
         setLoadedModels(prev => new Set([...prev, modelId]));
       }
       
-      // Update selected model
       setSelectedModel(modelId);
-      localStorage.setItem(`selectedModel-${position}`, modelId);
       onModelSelect?.(position, modelId);
       
     } catch (error) {
@@ -525,7 +542,7 @@ function ChatWindow({
   // Add back the missing utility functions
   const getModelColor = (modelName) => {
     if (!modelName) return 'primary.main';
-    const name = modelName.trim().toLowerCase();
+    const name = (modelName || '').trim().toLowerCase();
     
     // Use a consistent color scheme based on model name
     const colors = {
@@ -856,66 +873,113 @@ function ChatWindow({
     URL.revokeObjectURL(url);
   }, [currentConversation]);
 
-  // Add the missing handleBrainstormToggle function
+  // Update handleStopResponse to match panel 1 exactly
+  const handleStopResponse = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      
+      setThinking(prev => ({ ...prev, [position]: false }));
+      
+      // Update conversations with the current streaming response
+      if (streamingResponse) {
+        setConversations(prev => prev.map(conv => 
+          conv.id === currentConversationId
+            ? {
+                ...conv,
+                messages: [
+                  ...conv.messages,
+                  {
+                    content: streamingResponse,
+                    timestamp: new Date().toISOString(),
+                    role: 'assistant'
+                  }
+                ]
+              }
+            : conv
+        ));
+      }
+      
+      setStreamingResponses(prev => ({ ...prev, [position]: '' }));
+    }
+  }, [position, setThinking, streamingResponse, currentConversationId, setConversations, setStreamingResponses]);
+
+  // Update brainstorm handling
   const handleBrainstormToggle = useCallback(() => {
     const newState = !brainstormEnabled;
     setBrainstormEnabled(newState);
     
-    // Notify other panel
-    const event = new CustomEvent('brainstormSync', {
-      detail: {
-        enabled: newState,
-        iterations: brainstormIterations,
-        fromPosition: position
-      }
-    });
-    window.dispatchEvent(event);
+    // Only notify other panel if we're enabling brainstorm
+    if (newState) {
+      const event = new CustomEvent('brainstormSync', {
+        detail: {
+          enabled: newState,
+          iterations: brainstormIterations,
+          fromPosition: position
+        }
+      });
+      window.dispatchEvent(event);
+    }
   }, [brainstormEnabled, brainstormIterations, position]);
+
+  // Add brainstorm message handler
+  useEffect(() => {
+    const handleBrainstormMessage = (event) => {
+      const { enabled, iterations, fromPosition } = event.detail;
+      
+      // Only handle messages from the other panel
+      if (fromPosition === position) return;
+      
+      if (enabled) {
+        setBrainstormEnabled(true);
+        setBrainstormIterations(iterations);
+        localStorage.setItem(`brainstorm-enabled-${position}`, 'true');
+        localStorage.setItem(`brainstorm-iterations-${position}`, iterations.toString());
+      }
+    };
+
+    window.addEventListener('brainstormSync', handleBrainstormMessage);
+    return () => window.removeEventListener('brainstormSync', handleBrainstormMessage);
+  }, [position]);
 
   // Update handleSendMessage to properly handle message state
   const handleSendMessage = useCallback(async () => {
-    console.log('Send attempt:', {
-      hasInput: Boolean(inputValue.trim()),
-      selectedModel,
-      isModelSwitching,
-      currentMessages: currentConversation.messages
-    });
-
-    if (!inputValue.trim() || !selectedModel || isModelSwitching) {
-      console.log('Send blocked:', {
-        noInput: !inputValue.trim(),
-        noModel: !selectedModel,
-        switching: isModelSwitching
-      });
-      return;
-    }
+    if (!inputValue.trim() || !selectedModel || isModelSwitching) return;
 
     const message = inputValue.trim();
-    const currentMessages = [...currentConversation.messages];
-    
-    console.log('Sending message:', {
-      message,
-      model: selectedModel,
-      position
-    });
-    
     setInputValue('');
     
     const userMessage = {
-      content: message,
-      timestamp: new Date().toISOString(),
       role: 'user',
+      content: message,
+      timestamp: new Date().toISOString()
     };
     
-    updateConversationMessages([...currentMessages, userMessage]);
+    // Add user message to conversation immediately
+    setConversations(prev => prev.map(conv => 
+      conv.id === currentConversationId
+        ? {
+            ...conv,
+            messages: [...conv.messages, userMessage]
+          }
+        : conv
+    ));
+    
+    // Notify parent component
     onMessageSubmit?.(message);
 
     try {
       setThinking(prev => ({ ...prev, [position]: true }));
       setStreamingResponses(prev => ({ ...prev, [position]: '' }));
 
-      console.log('Fetching response from:', serverUrl);
       abortControllerRef.current = new AbortController();
+
+      // Get the updated messages array that includes the user message
+      const currentConv = conversations.find(c => c.id === currentConversationId);
+      const formattedMessages = [...(currentConv?.messages || []), userMessage].map(msg => ({
+        role: msg.role || 'user',
+        content: msg.content
+      }));
 
       const response = await fetch(`${serverUrl}/v1/chat/completions`, {
         method: 'POST',
@@ -924,10 +988,7 @@ function ChatWindow({
         },
         body: JSON.stringify({
           model: selectedModel,
-          messages: [...currentMessages, userMessage].map(msg => ({
-            role: msg.role,
-            content: msg.content
-          })),
+          messages: formattedMessages,
           stream: true
         }),
         signal: abortControllerRef.current.signal
@@ -941,65 +1002,46 @@ function ChatWindow({
       await processStreamingResponse(reader);
       
     } catch (error) {
-      console.error('Send error:', error);
       if (error.name === 'AbortError') {
         console.log('Request was aborted');
         return;
       }
       console.error('Error sending message:', error);
-      updateConversationMessages([
-        ...currentMessages,
-        userMessage,
-        {
-          content: `Error: ${error.message}`,
-          timestamp: new Date().toISOString(),
-          role: 'error',
-        }
-      ]);
+      
+      // Add error message to conversation
+      setConversations(prev => prev.map(conv => 
+        conv.id === currentConversationId
+          ? {
+              ...conv,
+              messages: [
+                ...conv.messages,
+                {
+                  content: `Error: ${error.message}`,
+                  timestamp: new Date().toISOString(),
+                  role: 'error',
+                }
+              ]
+            }
+          : conv
+      ));
     } finally {
       setThinking(prev => ({ ...prev, [position]: false }));
       abortControllerRef.current = null;
-      setStreamingResponses(prev => ({ ...prev, [position]: '' }));
     }
   }, [
     inputValue,
     selectedModel,
     isModelSwitching,
-    currentConversation.messages,
-    updateConversationMessages,
-    setStreamingResponses,
+    currentConversationId,
     position,
     serverUrl,
     processStreamingResponse,
     setThinking,
-    onMessageSubmit
+    onMessageSubmit,
+    conversations,
+    setConversations,
+    setStreamingResponses
   ]);
-
-  // Update handleStopResponse to properly handle message state
-  const handleStopResponse = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-      
-      // Immediately update UI state
-      setThinking(prev => ({ ...prev, [position]: false }));
-      
-      // Add the partial response as a message if there is any
-      if (streamingResponse) {
-        const currentMessages = [...currentConversation.messages];
-        updateConversationMessages([
-          ...currentMessages,
-          {
-            content: streamingResponse,
-            timestamp: new Date().toISOString(),
-            role: 'assistant',
-          }
-        ]);
-      }
-      // Clear streaming response
-      setStreamingResponses(prev => ({ ...prev, [position]: '' }));
-    }
-  }, [position, setThinking, streamingResponse, currentConversation.messages, updateConversationMessages, setStreamingResponses]);
 
   // Add handleNewConversation function
   const handleNewConversation = useCallback(() => {
@@ -1044,7 +1086,7 @@ function ChatWindow({
     setMenuAnchor(null);
   }, [currentConversationId, handleNewConversation, updateConversationMessages]);
 
-  // Add ThinkingIndicator component
+  // Update ThinkingIndicator to ensure stop button is properly connected
   const ThinkingIndicator = memo(({ isThinking, onStop }) => (
     isThinking ? (
       <Message align="left">

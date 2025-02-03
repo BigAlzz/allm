@@ -22,7 +22,7 @@ import {
   Refresh as RefreshIcon,
   ExpandMore as ExpandIcon,
 } from '@mui/icons-material';
-import { runNetworkDiagnostics } from '../tests/ChatConnection.test';
+import { runNetworkDiagnostics } from '../utils/networkDiagnostics';
 
 const StyledCard = styled(Card)(({ theme }) => ({
   backgroundColor: theme.palette.background.paper,
@@ -55,93 +55,47 @@ const ExpandButton = styled(IconButton)(({ theme, expanded }) => ({
   }),
 }));
 
-const NetworkDiagnostics = ({ variant = 'full', showTestButton = true }) => {
-  const [loading, setLoading] = useState(false);
+const NetworkDiagnostics = ({ serverUrl }) => {
   const [diagnostics, setDiagnostics] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(false);
 
-  const runTests = async () => {
-    setLoading(true);
-    try {
-      const results = await runNetworkDiagnostics();
-      setDiagnostics(results);
-      setExpanded(true);
-    } catch (error) {
-      console.error('Failed to run diagnostics:', error);
-      setDiagnostics({ 
-        serverReachable: false,
-        endpoints: {},
-        modelList: [],
-        details: [],
-        errors: [error.message]
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Run diagnostics on mount and every 5 seconds
   useEffect(() => {
-    runTests();
-    const interval = setInterval(runTests, 5000);
-    return () => clearInterval(interval);
-  }, []);
-
-  if (variant === 'compact') {
-    const isConnected = diagnostics?.serverReachable;
-    const hasModels = diagnostics?.modelList?.length > 0;
-    const allEndpointsAvailable = diagnostics?.endpoints && 
-      Object.values(diagnostics.endpoints).every(status => status);
-    
-    const getStatusColor = () => {
-      if (!isConnected) return '#ff1744'; // Red for no connection
-      if (!hasModels) return '#ff9800'; // Orange for no models
-      if (!allEndpointsAvailable) return '#ffeb3b'; // Yellow for partial availability
-      return '#44b700'; // Green for all good
+    const runDiagnostics = async () => {
+      try {
+        setLoading(true);
+        const results = await runNetworkDiagnostics(serverUrl);
+        setDiagnostics(results);
+      } catch (error) {
+        console.error('Error running diagnostics:', error);
+        setDiagnostics({
+          serverReachable: false,
+          errors: [`Failed to run diagnostics: ${error.message}`]
+        });
+      } finally {
+        setLoading(false);
+      }
     };
 
-    const getStatusText = () => {
-      if (!isConnected) return 'Not Connected';
-      if (!hasModels) return 'No Models';
-      if (!allEndpointsAvailable) return 'Partial';
-      return 'Connected';
-    };
+    runDiagnostics();
+  }, [serverUrl]);
 
-    const getTooltipText = () => {
-      if (!isConnected) return 'Not Connected to LM Studio';
-      if (!hasModels) return 'Connected but no models loaded';
-      if (!allEndpointsAvailable) return 'Some endpoints are not available';
-      return 'Connected to LM Studio';
-    };
-
-    const statusColor = getStatusColor();
-    const statusText = getStatusText();
-
+  if (loading) {
     return (
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Tooltip title={getTooltipText()}>
-          <Typography 
-            variant="body2" 
-            sx={{ 
-              color: statusColor,
-              fontWeight: 500,
-              fontSize: '0.875rem',
-            }}
-          >
-            {statusText}
-          </Typography>
-        </Tooltip>
-        {showTestButton && (
-          <Button
-            size="small"
-            startIcon={loading ? <CircularProgress size={16} /> : <RefreshIcon />}
-            onClick={runTests}
-            disabled={loading}
-          >
-            Test
-          </Button>
-        )}
+      <Box display="flex" alignItems="center" justifyContent="center" p={2}>
+        <CircularProgress size={24} />
+        <Typography variant="body2" ml={2}>
+          Running network diagnostics...
+        </Typography>
       </Box>
+    );
+  }
+
+  if (!diagnostics) {
+    return (
+      <Typography color="error" variant="body2">
+        Unable to run network diagnostics
+      </Typography>
     );
   }
 
@@ -163,17 +117,6 @@ const NetworkDiagnostics = ({ variant = 'full', showTestButton = true }) => {
               </ExpandButton>
             )}
           </Box>
-          {showTestButton && (
-            <Button
-              variant="contained"
-              startIcon={loading ? <CircularProgress size={16} /> : <RefreshIcon />}
-              onClick={runTests}
-              disabled={loading}
-              size="small"
-            >
-              {loading ? 'Testing...' : 'Test Connection'}
-            </Button>
-          )}
         </Box>
 
         <Collapse in={expanded}>
@@ -193,41 +136,7 @@ const NetworkDiagnostics = ({ variant = 'full', showTestButton = true }) => {
                     secondary={diagnostics.serverReachable ? 'Connected' : 'Not Connected'}
                   />
                 </ListItem>
-
-                {Object.entries(diagnostics.endpoints).map(([endpoint, status]) => (
-                  <ListItem key={endpoint}>
-                    <ListItemIcon>
-                      {status ? (
-                        <CheckIcon color="success" />
-                      ) : (
-                        <ErrorIcon color="error" />
-                      )}
-                    </ListItemIcon>
-                    <ListItemText 
-                      primary={`${endpoint.charAt(0).toUpperCase() + endpoint.slice(1)} Endpoint`}
-                      secondary={status ? 'Available' : 'Not Available'}
-                    />
-                  </ListItem>
-                ))}
               </StatusList>
-
-              {diagnostics.modelList.length > 0 && (
-                <Box mt={2}>
-                  <Typography variant="subtitle2" gutterBottom color="textSecondary">
-                    Available Models
-                  </Typography>
-                  <DetailsList>
-                    {diagnostics.modelList.map((model) => (
-                      <ListItem key={model.id}>
-                        <ListItemText 
-                          primary={model.id}
-                          secondary={`Type: ${model.object}`}
-                        />
-                      </ListItem>
-                    ))}
-                  </DetailsList>
-                </Box>
-              )}
 
               {diagnostics.details.length > 0 && (
                 <Box mt={2}>

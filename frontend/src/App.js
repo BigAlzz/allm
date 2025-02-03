@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   CssBaseline,
@@ -31,6 +31,7 @@ import ChatWindow from './components/ChatWindow';
 import NetworkDiagnostics from './components/NetworkDiagnostics';
 import { alpha } from '@mui/material/styles';
 import Notebook from './components/Notebook';
+import PanelLayout from './components/PanelLayout';
 
 // Create a dark theme with purple accents
 const theme = createTheme({
@@ -183,13 +184,38 @@ function App() {
     right: [],
   });
 
+  const [currentMessage, setCurrentMessage] = useState('');
+
   // Handle brainstorm messages
   const handleBrainstormMessage = (position, message) => {
+    console.log(`Handling brainstorm message from ${position}:`, message);
     const otherPosition = position === 'left' ? 'right' : 'left';
-    setPanelMessages(prev => ({
-      ...prev,
-      [otherPosition]: [...prev[otherPosition], message],
-    }));
+    
+    // Create a new message object to avoid mutation
+    const newMessage = {
+      ...message,
+      processed: false,
+      metadata: {
+        ...message.metadata,
+        fromPanel: position,
+        timestamp: new Date().toISOString(),
+        iterationCount: (message.metadata?.iterationCount || 0)
+      }
+    };
+
+    setPanelMessages(prev => {
+      // Create a new state object with existing messages
+      const updatedMessages = {
+        left: [...(prev.left || [])],
+        right: [...(prev.right || [])]
+      };
+
+      // Add the new message to the other panel's messages
+      updatedMessages[otherPosition] = [...updatedMessages[otherPosition], newMessage];
+      
+      console.log(`Updated panel messages for ${otherPosition}:`, updatedMessages[otherPosition]);
+      return updatedMessages;
+    });
   };
 
   const [loading, setLoading] = useState(true);
@@ -316,158 +342,46 @@ function App() {
     setRetryCount(0);
   };
 
+  const handleMessageSubmit = useCallback((message) => {
+    setCurrentMessage(message);
+  }, []);
+
+  // Render chat windows with model selection callback
+  const renderChatWindows = useCallback((panelId, onModelSelect) => (
+    <ChatWindow
+      key={panelId}
+      position={panelId}
+      models={models}
+      streamingResponse={streamingResponses[panelId] || ''}
+      isThinking={thinking[panelId] || false}
+      setStreamingResponses={setStreamingResponses}
+      setThinking={setThinking}
+      serverUrl={serverUrl}
+      otherPanelMessages={[]}
+      onBrainstormMessage={handleBrainstormMessage}
+      onMessageSubmit={handleMessageSubmit}
+      onModelSelect={onModelSelect}
+    />
+  ), [models, streamingResponses, thinking, serverUrl, handleBrainstormMessage, handleMessageSubmit]);
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <AppContainer>
-        {loading ? (
-          <LoadingContainer>
-            <CircularProgress size={40} />
-            <Typography variant="h6">
-              Connecting to LM Studio...
-            </Typography>
-            <Typography variant="body2" color="textSecondary">
-              Attempting to connect to {serverUrl}
-            </Typography>
-            <Typography variant="body2" color="textSecondary">
-              Make sure LM Studio is running and the Local Server is started
-            </Typography>
-          </LoadingContainer>
-        ) : error ? (
-          <LoadingContainer>
-            <Typography variant="h6" color="error">
-              Unable to connect to LM Studio
-            </Typography>
-            <Typography variant="body1" color="error" sx={{ whiteSpace: 'pre-line' }}>
-              {error}
-            </Typography>
-            <Box sx={{ display: 'flex', gap: 2, mt: 2 }}>
-              <ActionButton
-                variant="contained"
-                startIcon={<RefreshIcon />}
-                onClick={handleRetry}
-              >
-                Retry Connection
-              </ActionButton>
-              <ActionButton
-                variant="contained"
-                startIcon={<SettingsIcon />}
-                onClick={() => setConfigOpen(true)}
-              >
-                Configure Server
-              </ActionButton>
-            </Box>
-            <Box sx={{ width: '100%', maxWidth: 600, mt: 4 }}>
-              <NetworkDiagnostics />
-            </Box>
-          </LoadingContainer>
-        ) : (
-          <>
-            <StyledAppBar>
-              <StyledToolbar>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <Typography variant="h6" component="div">
-                    ALLM
-                  </Typography>
-                  <NetworkDiagnostics variant="compact" showTestButton={false} />
-                </Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <ActionButton
-                    startIcon={<RefreshIcon />}
-                    onClick={handleRetry}
-                  >
-                    Refresh
-                  </ActionButton>
-                  <IconButton
-                    color="inherit"
-                    onClick={() => setIsNotebookOpen(true)}
-                    title="Open Notebook"
-                  >
-                    <NoteAddIcon />
-                  </IconButton>
-                  <IconButton
-                    color="inherit"
-                    onClick={() => setConfigOpen(true)}
-                  >
-                    <SettingsIcon />
-                  </IconButton>
-                </Box>
-              </StyledToolbar>
-            </StyledAppBar>
-
-            <ChatContainer>
-              <ChatWindow
-                position="left"
-                models={models}
-                streamingResponse={streamingResponses.left}
-                isThinking={thinking.left}
-                setStreamingResponses={setStreamingResponses}
-                setThinking={setThinking}
-                serverUrl={serverUrl}
-                otherPanelMessages={panelMessages.right}
-                onBrainstormMessage={(message) => handleBrainstormMessage('left', message)}
-              />
-              <ChatWindow
-                position="right"
-                models={models}
-                streamingResponse={streamingResponses.right}
-                isThinking={thinking.right}
-                setStreamingResponses={setStreamingResponses}
-                setThinking={setThinking}
-                serverUrl={serverUrl}
-                otherPanelMessages={panelMessages.left}
-                onBrainstormMessage={(message) => handleBrainstormMessage('right', message)}
-              />
-            </ChatContainer>
-          </>
-        )}
-
-        <Dialog 
-          open={configOpen} 
-          onClose={() => setConfigOpen(false)}
-          PaperProps={{
-            sx: {
-              backgroundColor: theme.palette.background.paper,
-              backgroundImage: 'none',
-            }
-          }}
+        <PanelLayout
+          currentMessage={currentMessage}
+          isNotebookOpen={isNotebookOpen}
+          onToggleNotebook={() => setIsNotebookOpen(prev => !prev)}
+          models={models}
         >
-          <DialogTitle>Configure LM Studio Server</DialogTitle>
-          <DialogContent>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
-              <TextField
-                label="Server Address"
-                value={serverConfig.address}
-                onChange={(e) => setServerConfig(prev => ({ ...prev, address: e.target.value }))}
-                helperText="Example: localhost or 192.168.50.89"
-                fullWidth
-                variant="outlined"
-              />
-              <TextField
-                label="Port"
-                value={serverConfig.port}
-                onChange={(e) => setServerConfig(prev => ({ ...prev, port: e.target.value }))}
-                helperText="Default: 1234"
-                fullWidth
-                variant="outlined"
-              />
-              <NetworkDiagnostics />
-            </Box>
-          </DialogContent>
-          <DialogActions sx={{ p: 2, gap: 1 }}>
-            <Button onClick={() => setConfigOpen(false)}>
-              Cancel
-            </Button>
-            <ActionButton onClick={handleConfigSave} variant="contained">
-              Save & Reconnect
-            </ActionButton>
-          </DialogActions>
-        </Dialog>
-
-        <Notebook 
-          open={isNotebookOpen}
-          onClose={() => setIsNotebookOpen(false)}
-        />
+          {renderChatWindows}
+        </PanelLayout>
+        {isNotebookOpen && (
+          <Notebook 
+            isOpen={isNotebookOpen} 
+            onClose={() => setIsNotebookOpen(false)} 
+          />
+        )}
       </AppContainer>
     </ThemeProvider>
   );
